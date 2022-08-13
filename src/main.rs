@@ -13,6 +13,28 @@ const SERVER: Token = Token(0);
 // Some data we'll send over the connection.
 const DATA: &[u8] = b"Hello world!\n";
 
+struct WebSocketServer {
+    socket: TcpListener,
+    connections: HashMap<Token, TcpStream>,
+    token_counter: usize,
+}
+
+impl WebSocketServer {
+    fn new(socket: TcpListener) -> WebSocketServer {
+        WebSocketServer {
+            socket,
+            connections: HashMap::new(),
+            token_counter: SERVER.0 + 1,
+        }
+    }
+
+    fn next(&mut self) -> Token {
+        let next = self.token_counter;
+        self.token_counter += 1;
+        Token(next)
+    }
+}
+
 #[cfg(not(target_os = "wasi"))]
 fn main() -> io::Result<()> {
     // env_logger::init();
@@ -30,10 +52,7 @@ fn main() -> io::Result<()> {
     poll.registry()
         .register(&mut server, SERVER, Interest::READABLE)?;
 
-    // Map of `Token` -> `TcpStream`.
-    let mut connections = HashMap::new();
-    // Unique token for each incoming connection.
-    let mut unique_token = Token(SERVER.0 + 1);
+    let mut server = WebSocketServer::new(server);
 
     println!("You can connect to the server using `nc`:");
     println!(" $ nc 127.0.0.1 9000");
@@ -49,7 +68,7 @@ fn main() -> io::Result<()> {
                     println!("in server match");
                     // Received an event for the TCP server socket, which
                     // indicates we can accept an connection.
-                    let (mut connection, address) = match server.accept() {
+                    let (mut connection, address) = match server.socket.accept() {
                         Ok((connection, address)) => (connection, address),
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                             // If we get a `WouldBlock` error we know our
@@ -67,7 +86,7 @@ fn main() -> io::Result<()> {
 
                     println!("Accepted connection from: {}", address);
 
-                    let token = next(&mut unique_token);
+                    let token = server.next();
                     poll.registry().register(
                         &mut connection,
                         token,
@@ -75,19 +94,19 @@ fn main() -> io::Result<()> {
                     )?;
                     println!("poll registry for token {:?}", token);
 
-                    connections.insert(token, connection);
+                    server.connections.insert(token, connection);
                 },
                 token => {
                     println!("token fired for {:?}", token);
                     // Maybe received an event for a TCP connection.
-                    let done = if let Some(connection) = connections.get_mut(&token) {
+                    let done = if let Some(connection) = server.connections.get_mut(&token) {
                         handle_connection_event(poll.registry(), connection, event)?
                     } else {
                         // Sporadic events happen, we can safely ignore them.
                         false
                     };
                     if done {
-                        if let Some(mut connection) = connections.remove(&token) {
+                        if let Some(mut connection) = server.connections.remove(&token) {
                             poll.registry().deregister(&mut connection)?;
                         }
                     }
@@ -95,12 +114,6 @@ fn main() -> io::Result<()> {
             }
         }
     }
-}
-
-fn next(current: &mut Token) -> Token {
-    let next = current.0;
-    current.0 += 1;
-    Token(next)
 }
 
 /// Returns `true` if the connection is done.
@@ -122,7 +135,7 @@ fn handle_connection_event(
                 // to only respond to readable events.
                 println!("token {:?}", event.token());
                 registry.reregister(connection, event.token(), Interest::READABLE)?;
-                connection.write(DATA);
+                // connection.write(DATA);
             }
             // Would block "errors" are the OS's way of saying that the
             // connection is not actually ready to perform this I/O operation.

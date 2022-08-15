@@ -1,5 +1,7 @@
 // You can run this example from the root of the mio repo:
 // cargo run --example tcp_server --features="os-poll net"
+mod client;
+use client::WebSocketClient;
 use mio::event::Event;
 use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Interest, Poll, Registry, Token};
@@ -15,7 +17,7 @@ const DATA: &[u8] = b"Hello world!\n";
 
 struct WebSocketServer {
     socket: TcpListener,
-    connections: HashMap<Token, TcpStream>,
+    connections: HashMap<Token, WebSocketClient>,
     token_counter: usize,
 }
 
@@ -61,15 +63,15 @@ fn main() -> io::Result<()> {
     loop {
         println!("in for loop");
         poll.poll(&mut events, None)?;
-
+        println!("event: {:?}", events);
         for event in events.iter() {
             match event.token() {
                 SERVER => loop {
                     println!("in server match");
                     // Received an event for the TCP server socket, which
                     // indicates we can accept an connection.
-                    let (mut connection, address) = match server.socket.accept() {
-                        Ok((connection, address)) => (connection, address),
+                    let mut client = match server.socket.accept() {
+                        Ok((connection, _)) => WebSocketClient::new(connection),
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                             // If we get a `WouldBlock` error we know our
                             // listener has no more incoming connections queued,
@@ -84,30 +86,29 @@ fn main() -> io::Result<()> {
                         }
                     };
 
-                    println!("Accepted connection from: {}", address);
+                    // println!("Accepted connection from: {}", address);
 
                     let token = server.next();
-                    poll.registry().register(
-                        &mut connection,
-                        token,
-                        Interest::READABLE.add(Interest::WRITABLE),
-                    )?;
+                    poll.registry()
+                        .register(&mut client.socket, token, Interest::READABLE)?;
                     println!("poll registry for token {:?}", token);
 
-                    server.connections.insert(token, connection);
+                    server.connections.insert(token, client);
                 },
                 token => {
                     println!("token fired for {:?}", token);
                     // Maybe received an event for a TCP connection.
-                    let done = if let Some(connection) = server.connections.get_mut(&token) {
-                        handle_connection_event(poll.registry(), connection, event)?
+                    let done = if let Some(client) = server.connections.get_mut(&token) {
+                        client.read();
+                        false
+                        // handle_connection_event(poll.registry(), &mut client.socket, event)?
                     } else {
                         // Sporadic events happen, we can safely ignore them.
                         false
                     };
                     if done {
-                        if let Some(mut connection) = server.connections.remove(&token) {
-                            poll.registry().deregister(&mut connection)?;
+                        if let Some(mut client) = server.connections.remove(&token) {
+                            poll.registry().deregister(&mut client.socket)?;
                         }
                     }
                 }
@@ -122,32 +123,32 @@ fn handle_connection_event(
     connection: &mut TcpStream,
     event: &Event,
 ) -> io::Result<bool> {
-    if event.is_writable() {
-        println!("event: {:?}", event);
-        // We can (maybe) write to the connection.
-        match connection.write(DATA) {
-            // We want to write the entire `DATA` buffer in a single go. If we
-            // write less we'll return a short write error (same as
-            // `io::Write::write_all` does).
-            Ok(n) if n < DATA.len() => return Err(io::ErrorKind::WriteZero.into()),
-            Ok(_) => {
-                // After we've written something we'll reregister the connection
-                // to only respond to readable events.
-                println!("token {:?}", event.token());
-                registry.reregister(connection, event.token(), Interest::READABLE)?;
-                // connection.write(DATA);
-            }
-            // Would block "errors" are the OS's way of saying that the
-            // connection is not actually ready to perform this I/O operation.
-            Err(ref err) if would_block(err) => {}
-            // Got interrupted (how rude!), we'll try again.
-            Err(ref err) if interrupted(err) => {
-                return handle_connection_event(registry, connection, event)
-            }
-            // Other errors we'll consider fatal.
-            Err(err) => return Err(err),
-        }
-    }
+    // if event.is_writable() {
+    //     println!("event: {:?}", event);
+    //     // We can (maybe) write to the connection.
+    //     match connection.write(DATA) {
+    //         // We want to write the entire `DATA` buffer in a single go. If we
+    //         // write less we'll return a short write error (same as
+    //         // `io::Write::write_all` does).
+    //         Ok(n) if n < DATA.len() => return Err(io::ErrorKind::WriteZero.into()),
+    //         Ok(_) => {
+    //             // After we've written something we'll reregister the connection
+    //             // to only respond to readable events.
+    //             println!("token {:?}", event.token());
+    //             registry.reregister(connection, event.token(), Interest::READABLE)?;
+    //             // connection.write(DATA);
+    //         }
+    //         // Would block "errors" are the OS's way of saying that the
+    //         // connection is not actually ready to perform this I/O operation.
+    //         Err(ref err) if would_block(err) => {}
+    //         // Got interrupted (how rude!), we'll try again.
+    //         Err(ref err) if interrupted(err) => {
+    //             return handle_connection_event(registry, connection, event)
+    //         }
+    //         // Other errors we'll consider fatal.
+    //         Err(err) => return Err(err),
+    //     }
+    // }
 
     if event.is_readable() {
         println!("connection is readable {:?}", event);

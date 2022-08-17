@@ -3,10 +3,9 @@
 mod client;
 use client::WebSocketClient;
 use mio::net::TcpListener;
-use mio::{Events, Interest, Poll, Registry, Token};
+use mio::{Events, Interest, Poll, Token};
 use std::collections::HashMap;
-use std::io::{self, Read};
-use std::str::from_utf8;
+use std::io;
 
 // Setup some tokens to allow us to identify which event is for which socket.
 const SERVER: Token = Token(0);

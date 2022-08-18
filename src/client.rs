@@ -56,6 +56,16 @@ pub enum ClientState {
 
 impl WebSocketClient {
     pub fn read(&mut self, poll: &mut Poll, token: &Token) {
+        match self.state {
+            ClientState::AwaitingHandshake => {
+                self.read_handshake(poll, token);
+            }
+            ClientState::HandshakeResponse => todo!(),
+            ClientState::Connected => todo!(),
+        }
+    }
+
+    pub fn read_handshake(&mut self, poll: &mut Poll, token: &Token) {
         loop {
             let mut buf = [0; 2048];
             // println!("socket: {:?}", self.socket);

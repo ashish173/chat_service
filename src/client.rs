@@ -1,9 +1,7 @@
 extern crate rustc_serialize;
-extern crate sha1;
-use rustc_serialize::base64::{ToBase64, STANDARD};
+
 extern crate http_muncher;
 use mio::{Interest, Poll, Token};
-use sha1::Digest;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
@@ -13,7 +11,9 @@ use std::rc::Rc;
 use http_muncher::{Parser, ParserHandler};
 use mio::net::TcpStream;
 
-#[derive(Debug)]
+use crate::http::gen_key;
+
+#[derive(Debug, PartialEq)]
 pub struct HttpParser {
     current_key: Option<String>,
     headers: Rc<RefCell<HashMap<String, String>>>,
@@ -25,7 +25,7 @@ pub struct WebSocketClient {
     pub parser: Parser,
     pub interest: Interest,
     pub state: ClientState,
-    pub http_parser: HttpParser,
+    pub headers: Rc<RefCell<HashMap<String, String>>>,
 }
 
 impl ParserHandler for HttpParser {
@@ -49,7 +49,7 @@ impl ParserHandler for HttpParser {
 
 #[derive(PartialEq, Debug)]
 pub enum ClientState {
-    AwaitingHandshake,
+    AwaitingHandshake(HttpParser),
     HandshakeResponse,
     Connected,
 }
@@ -57,7 +57,7 @@ pub enum ClientState {
 impl WebSocketClient {
     pub fn read(&mut self, poll: &mut Poll, token: &Token) {
         match self.state {
-            ClientState::AwaitingHandshake => {
+            ClientState::AwaitingHandshake(_) => {
                 self.read_handshake(poll, token);
             }
             ClientState::HandshakeResponse => todo!(),
@@ -79,9 +79,13 @@ impl WebSocketClient {
                     if _len == 0 {
                         break;
                     }
-                    let hp = &mut self.http_parser;
 
-                    self.parser.parse(hp, &buf);
+                    if let ClientState::AwaitingHandshake(ref mut parser_state) = self.state {
+                        // let http_parser = parser_state.get_mut();
+                        self.parser.parse(parser_state, &buf);
+                    };
+
+                    // self.parser.parse(hp, &buf);
                     if self.parser.is_upgrade() {
                         self.state = ClientState::HandshakeResponse;
 
@@ -99,7 +103,7 @@ impl WebSocketClient {
 
     pub fn write(&mut self, poll: &mut Poll, token: &Token) {
         // Get the headers HashMap from the Rc<RefCell<...>> wrapper:
-        let headers = self.http_parser.headers.borrow();
+        let headers = self.headers.borrow();
 
         // Find the header that interests us, and generate the key from its value:
         let response_key = gen_key(&headers.get("Sec-WebSocket-Key").unwrap());
@@ -125,31 +129,17 @@ impl WebSocketClient {
     }
 
     pub fn new(socket: TcpStream) -> WebSocketClient {
+        let headers = Rc::new(RefCell::new(HashMap::new()));
+
         WebSocketClient {
             socket: socket,
             parser: Parser::request(),
             interest: Interest::READABLE,
-            state: ClientState::AwaitingHandshake,
-            http_parser: HttpParser {
+            headers: headers.clone(),
+            state: ClientState::AwaitingHandshake(HttpParser {
                 current_key: None,
-                headers: Rc::new(RefCell::new(HashMap::new())),
-            },
+                headers: headers.clone(),
+            }),
         }
     }
-}
-
-fn gen_key(key: &String) -> String {
-    let mut m = sha1::Sha1::new();
-    let mut _buf = [0u8; 20];
-
-    let data = [
-        key.as_bytes(),
-        "258EAFA5-E914-47DA-95CA-C5AB0DC85B11".as_bytes(), // appending a key
-    ]
-    .concat();
-    m.update(data);
-
-    let _len = m.finalize();
-
-    return _len.to_base64(STANDARD);
 }

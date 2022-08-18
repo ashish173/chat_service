@@ -11,6 +11,7 @@ use std::rc::Rc;
 use http_muncher::{Parser, ParserHandler};
 use mio::net::TcpStream;
 
+use crate::frame::WebSocketFrame;
 use crate::http::gen_key;
 
 #[derive(Debug, PartialEq)]
@@ -57,11 +58,19 @@ pub enum ClientState {
 impl WebSocketClient {
     pub fn read(&mut self, poll: &mut Poll, token: &Token) {
         match self.state {
-            ClientState::AwaitingHandshake(_) => {
-                self.read_handshake(poll, token);
-            }
-            ClientState::HandshakeResponse => todo!(),
-            ClientState::Connected => todo!(),
+            ClientState::AwaitingHandshake(_) => self.read_handshake(poll, token),
+            ClientState::HandshakeResponse => {}
+            ClientState::Connected => self.read_frame(),
+        }
+    }
+
+    pub fn read_frame(&mut self) {
+        // read websocket frame
+        let frame = WebSocketFrame::read(&mut self.socket);
+
+        match frame {
+            Ok(wb) => println!("suucess, {:?}", wb),
+            Err(err) => println!("error occired"),
         }
     }
 

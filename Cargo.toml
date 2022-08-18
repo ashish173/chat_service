@@ -10,3 +10,5 @@ mio = { version = "0.8", features = ["os-poll", "net"] }
 http-muncher = "0.3.2"
 rustc-serialize = "0.3.24"
 sha1 = "0.10.1"
+byteorder = "1.4.3"
+bytes = "1.0.0"

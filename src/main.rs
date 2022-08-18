@@ -7,6 +7,7 @@ use mio::{Events, Interest, Poll, Token};
 use std::collections::HashMap;
 use std::io;
 
+mod frame;
 mod http;
 // Setup some tokens to allow us to identify which event is for which socket.
 const SERVER: Token = Token(0);

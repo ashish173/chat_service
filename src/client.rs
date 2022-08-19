@@ -69,7 +69,7 @@ impl WebSocketClient {
             ClientState::HandshakeResponse => self.write_handshake(poll, token),
             ClientState::Connected => {
                 println!("socket is writable");
-                std::thread::sleep(std::time::Duration::from_millis(5000));
+                // std::thread::sleep(std::time::Duration::from_millis(1000));
                 // prepare websocketframe without mask
                 let frame = WebSocketFrame::from("hey there!");
                 // socket write for this frame
@@ -90,18 +90,43 @@ impl WebSocketClient {
         let frame = WebSocketFrame::read(&mut self.socket);
 
         match frame {
-            Ok(wb) => {
-                println!("suucess, {:?}", wb.payload);
-                let pay = String::from_utf8(wb.payload).unwrap();
-                println!("data = {}", pay);
+            Ok(frame) => {
+                match frame.get_opcode() {
+                    9 => {
+                        // Pong
+                        // prepare pong
+                        let pong_frame = WebSocketFrame::pong(&frame);
+                        pong_frame.write(&mut self.socket);
+                    }
+                    1 => {
+                        // Text Frame
+                        let _ = poll.registry().reregister(
+                            &mut self.socket,
+                            *token,
+                            Interest::WRITABLE,
+                        );
+                    }
+                    8 => {
+                        // Connection close requset
+                        println!("in connection close");
+                        // std::thread::sleep(std::time::Duration::from_millis(8000));
+                        let close_frame = WebSocketFrame::close_from(&frame);
+                        close_frame.write(&mut self.socket);
+
+                        // to stop polling on the closed socket connection
+                        let close = poll.registry().deregister(&mut self.socket);
+                        println!("Close result {:?}", close);
+                    }
+                    _ => {}
+                }
+                // println!("suucess, {:?}", frame.payload);
+                // let pay = String::from_utf8(frame.payload).unwrap();
+                // println!("data = {}", pay);
 
                 // send response
                 // reregister into write
-                let _ = poll
-                    .registry()
-                    .reregister(&mut self.socket, *token, Interest::WRITABLE);
             }
-            Err(err) => println!("error occired"),
+            Err(err) => println!("error occired {:?}", err),
         }
     }
 

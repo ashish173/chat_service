@@ -60,16 +60,47 @@ impl WebSocketClient {
         match self.state {
             ClientState::AwaitingHandshake(_) => self.read_handshake(poll, token),
             ClientState::HandshakeResponse => {}
-            ClientState::Connected => self.read_frame(),
+            ClientState::Connected => self.read_frame(poll, token),
         }
     }
 
-    pub fn read_frame(&mut self) {
+    pub fn write(&mut self, poll: &mut Poll, token: &Token) {
+        match self.state {
+            ClientState::HandshakeResponse => self.write_handshake(poll, token),
+            ClientState::Connected => {
+                println!("socket is writable");
+                std::thread::sleep(std::time::Duration::from_millis(5000));
+                // prepare websocketframe without mask
+                let frame = WebSocketFrame::from("hey there!");
+                // socket write for this frame
+                // 1. write header
+                // 2. write payload
+                frame.write(&mut self.socket);
+                // change interest to readable
+                let _ = poll
+                    .registry()
+                    .reregister(&mut self.socket, *token, Interest::READABLE);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn read_frame(&mut self, poll: &mut Poll, token: &Token) {
         // read websocket frame
         let frame = WebSocketFrame::read(&mut self.socket);
 
         match frame {
-            Ok(wb) => println!("suucess, {:?}", wb),
+            Ok(wb) => {
+                println!("suucess, {:?}", wb.payload);
+                let pay = String::from_utf8(wb.payload).unwrap();
+                println!("data = {}", pay);
+
+                // send response
+                // reregister into write
+                let _ = poll
+                    .registry()
+                    .reregister(&mut self.socket, *token, Interest::WRITABLE);
+            }
             Err(err) => println!("error occired"),
         }
     }
@@ -110,7 +141,7 @@ impl WebSocketClient {
         }
     }
 
-    pub fn write(&mut self, poll: &mut Poll, token: &Token) {
+    pub fn write_handshake(&mut self, poll: &mut Poll, token: &Token) {
         // Get the headers HashMap from the Rc<RefCell<...>> wrapper:
         let headers = self.headers.borrow();
 

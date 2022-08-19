@@ -1,7 +1,10 @@
 // use std::io::u16;
-use std::{io::Read, iter};
+use std::{
+    io::{Read, Write},
+    iter,
+};
 
-use byteorder::{BigEndian, ReadBytesExt};
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
 use mio::net::TcpStream;
 
@@ -14,7 +17,7 @@ enum Opcode {
 }
 
 #[derive(Debug)]
-struct WebSocketFrameHeader {
+pub struct WebSocketFrameHeader {
     fin: bool,
     rsv1: bool,
     rsv2: bool,
@@ -29,10 +32,59 @@ struct WebSocketFrameHeader {
 pub struct WebSocketFrame {
     header: WebSocketFrameHeader,
     mask: Option<[u8; 4]>,
-    payload: Vec<u8>,
+    pub payload: Vec<u8>,
 }
 
 impl WebSocketFrame {
+    pub fn write(&self, socket: &mut TcpStream) {
+        // write header
+        println!("{:?}", self);
+        self.write_header(socket);
+        // let wsfh = &self.header;
+        // let buf = [];
+        // socket.write(buf)
+        // write payload
+        let _ = socket.write(&self.payload);
+    }
+
+    pub fn write_header(&self, socket: &mut TcpStream) {
+        // let mut buf = [0u8; 8];
+        let mut b1 = (self.header.fin as u8) << 7
+            | (self.header.rsv1 as u8) << 6
+            | (self.header.rsv2 as u8) << 5
+            | (self.header.rsv3 as u8) << 4
+            | (self.header.opcode as u8) & 0xFF;
+
+        let b2 = (self.header.payload_length as u8) & 0x7F;
+
+        let mut buf = ((b1 as u16) << 8) | (b2 as u16);
+        // socket.write(&buf);
+        socket.write_u16::<BigEndian>(buf);
+    }
+
+    pub fn from(payload: &str) -> WebSocketFrame {
+        let header = Self::prepare_headers(payload);
+
+        WebSocketFrame {
+            header,
+            mask: None,
+            payload: Vec::from(payload),
+        }
+    }
+
+    pub fn prepare_headers(payload: &str) -> WebSocketFrameHeader {
+        // opcode depends on
+        WebSocketFrameHeader {
+            fin: true,
+            rsv1: false,
+            rsv2: false,
+            rsv3: false,
+            opcode: 1 as u8,
+            masked: false,
+            payload_length: payload.len() as u8,
+        }
+    }
+
     pub fn read<R: Read>(socket: &mut R) -> std::io::Result<WebSocketFrame> {
         // let mut buf = vec![0u8; 1024];
         let buf = socket.read_u16::<BigEndian>()?;

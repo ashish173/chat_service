@@ -11,7 +11,7 @@ use std::rc::Rc;
 use http_muncher::{Parser, ParserHandler};
 use mio::net::TcpStream;
 
-use crate::frame::WebSocketFrame;
+use crate::frame::{Opcode, WebSocketFrame};
 use crate::http::gen_key;
 
 #[derive(Debug, PartialEq)]
@@ -92,21 +92,23 @@ impl WebSocketClient {
         match frame {
             Ok(frame) => {
                 match frame.get_opcode() {
-                    9 => {
+                    Opcode::Pong => {
                         // Pong
                         // prepare pong
                         let pong_frame = WebSocketFrame::pong(&frame);
                         pong_frame.write(&mut self.socket);
                     }
-                    1 => {
+                    Opcode::TextFrame => {
                         // Text Frame
+                        println!("data received {:?}", std::str::from_utf8(&frame.payload));
+                        println!("data mask {:?}", std::str::from_utf8(&frame.mask.unwrap()));
                         let _ = poll.registry().reregister(
                             &mut self.socket,
                             *token,
                             Interest::WRITABLE,
                         );
                     }
-                    8 => {
+                    Opcode::ConnectionClose => {
                         // Connection close requset
                         println!("in connection close");
                         // std::thread::sleep(std::time::Duration::from_millis(8000));
@@ -119,12 +121,6 @@ impl WebSocketClient {
                     }
                     _ => {}
                 }
-                // println!("suucess, {:?}", frame.payload);
-                // let pay = String::from_utf8(frame.payload).unwrap();
-                // println!("data = {}", pay);
-
-                // send response
-                // reregister into write
             }
             Err(err) => println!("error occired {:?}", err),
         }

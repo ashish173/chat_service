@@ -1,18 +1,18 @@
 // You can run this example from the root of the mio repo:
 // cargo run --example tcp_server --features="os-poll net"
-mod client;
-use client::WebSocketClient;
+
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
 use std::collections::HashMap;
 use std::io;
+// use WebSocketClient;
 
-mod frame;
-mod http;
+use crate::client::{self, WebSocketClient};
+
 // Setup some tokens to allow us to identify which event is for which socket.
 const SERVER: Token = Token(0);
 
-struct WebSocketServer {
+pub struct WebSocketServer {
     socket: TcpListener,
     connections: HashMap<Token, WebSocketClient>,
     token_counter: usize,
@@ -32,10 +32,12 @@ impl WebSocketServer {
         self.token_counter += 1;
         Token(next)
     }
+
+    pub fn broadcast(payload: &Vec<u8>) {}
 }
 
 #[cfg(not(target_os = "wasi"))]
-fn main() -> io::Result<()> {
+pub fn main() -> io::Result<()> {
     let mut poll = Poll::new()?;
     // Create storage for events.
     let mut events = Events::with_capacity(128);

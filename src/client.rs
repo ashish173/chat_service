@@ -13,6 +13,7 @@ use mio::net::TcpStream;
 
 use crate::frame::{Opcode, WebSocketFrame};
 use crate::http::gen_key;
+use crate::server::WebSocketServer;
 
 #[derive(Debug, PartialEq)]
 pub struct HttpParser {
@@ -75,7 +76,7 @@ impl WebSocketClient {
                 // socket write for this frame
                 // 1. write header
                 // 2. write payload
-                frame.write(&mut self.socket);
+                let res = frame.write(&mut self.socket);
                 // change interest to readable
                 let _ = poll
                     .registry()
@@ -101,12 +102,14 @@ impl WebSocketClient {
                     Opcode::TextFrame => {
                         // Text Frame
                         println!("data received {:?}", std::str::from_utf8(&frame.payload));
-                        println!("data mask {:?}", std::str::from_utf8(&frame.mask.unwrap()));
+                        // println!("data mask {:?}", std::str::from_utf8(&frame.mask.unwrap()));
                         let _ = poll.registry().reregister(
                             &mut self.socket,
                             *token,
                             Interest::WRITABLE,
                         );
+                        // broadcast message to clients
+                        WebSocketServer::broadcast(&frame.payload)
                     }
                     Opcode::ConnectionClose => {
                         // Connection close requset

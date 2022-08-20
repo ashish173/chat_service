@@ -10,11 +10,11 @@ use mio::net::TcpStream;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Opcode {
-    TextFrame,       // 1
-    BinaryFrame,     // 2
-    ConnectionClose, // 8
-    Ping,            // 9
-    Pong,            // 0xA
+    TextFrame = 1,       // 1
+    BinaryFrame = 2,     // 2
+    ConnectionClose = 8, // 8
+    Ping = 9,            // 9
+    Pong = 0xA,          // 0xA
 }
 
 impl Opcode {
@@ -93,7 +93,11 @@ impl WebSocketFrame {
         // write header
         // std::thread::sleep(std::time::Duration::from_millis(5000));
         self.write_header(socket);
-        let _ = socket.write(&self.payload);
+        let res = socket.write(&self.payload);
+        match res {
+            Ok(size) => println!("success"),
+            Err(err) => println!("Error writing {:?}", err),
+        }
     }
 
     pub fn write_header(&self, socket: &mut TcpStream) {
@@ -102,7 +106,7 @@ impl WebSocketFrame {
             | (self.header.rsv1 as u8) << 6
             | (self.header.rsv2 as u8) << 5
             | (self.header.rsv3 as u8) << 4
-            | (self.header.opcode as u8) & 0xFF;
+            | (self.header.opcode as u8) & 0x0F; // & with 00001111
 
         let b2 = (self.header.payload_length as u8) & 0x7F;
 

@@ -2,11 +2,14 @@ extern crate rustc_serialize;
 
 extern crate http_muncher;
 use mio::{Interest, Poll, Token};
+use std::borrow::BorrowMut;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{Read, Write};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 
 use http_muncher::{Parser, ParserHandler};
 use mio::net::TcpStream;
@@ -15,10 +18,10 @@ use crate::frame::{Opcode, WebSocketFrame};
 use crate::http::gen_key;
 use crate::server::WebSocketServer;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct HttpParser {
     current_key: Option<String>,
-    headers: Rc<RefCell<HashMap<String, String>>>,
+    headers: Arc<Mutex<HashMap<String, String>>>,
 }
 
 #[derive(Debug)]
@@ -27,7 +30,8 @@ pub struct WebSocketClient {
     pub parser: Parser,
     pub interest: Interest,
     pub state: ClientState,
-    pub headers: Rc<RefCell<HashMap<String, String>>>,
+    pub headers: Arc<Mutex<HashMap<String, String>>>,
+    pub sender: mpsc::Sender<(Vec<u8>)>,
 }
 
 impl ParserHandler for HttpParser {
@@ -37,7 +41,8 @@ impl ParserHandler for HttpParser {
     }
 
     fn on_header_value(&mut self, _p: &mut Parser, s: &[u8]) -> bool {
-        self.headers.borrow_mut().insert(
+        let mut r = self.headers.lock().unwrap();
+        r.insert(
             self.current_key.clone().unwrap(),
             std::str::from_utf8(s).unwrap().to_string(),
         );
@@ -49,7 +54,7 @@ impl ParserHandler for HttpParser {
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(Debug)]
 pub enum ClientState {
     AwaitingHandshake(HttpParser),
     HandshakeResponse,
@@ -57,7 +62,11 @@ pub enum ClientState {
 }
 
 impl WebSocketClient {
+    pub fn ro(&self) {
+        println!("in ro method");
+    }
     pub fn read(&mut self, poll: &mut Poll, token: &Token) {
+        println!("client read, {:?}", token);
         match self.state {
             ClientState::AwaitingHandshake(_) => self.read_handshake(poll, token),
             ClientState::HandshakeResponse => {}
@@ -65,14 +74,15 @@ impl WebSocketClient {
         }
     }
 
-    pub fn write(&mut self, poll: &mut Poll, token: &Token) {
+    pub fn write(&mut self, poll: &mut Poll, token: &Token, payload: &str) {
+        println!("in write");
         match self.state {
             ClientState::HandshakeResponse => self.write_handshake(poll, token),
             ClientState::Connected => {
                 println!("socket is writable");
                 // std::thread::sleep(std::time::Duration::from_millis(1000));
                 // prepare websocketframe without mask
-                let frame = WebSocketFrame::from("hey there!");
+                let frame = WebSocketFrame::from(payload);
                 // socket write for this frame
                 // 1. write header
                 // 2. write payload
@@ -109,7 +119,10 @@ impl WebSocketClient {
                             Interest::WRITABLE,
                         );
                         // broadcast message to clients
-                        WebSocketServer::broadcast(&frame.payload)
+                        // server.broadcast(&frame.payload)
+                        // mpsc send message
+                        let payload = frame.payload.clone();
+                        let _ = self.sender.send(payload);
                     }
                     Opcode::ConnectionClose => {
                         // Connection close requset
@@ -152,7 +165,7 @@ impl WebSocketClient {
                     // self.parser.parse(hp, &buf);
                     if self.parser.is_upgrade() {
                         self.state = ClientState::HandshakeResponse;
-
+                        println!("trying to upgrade");
                         let _res = poll.registry().reregister(
                             &mut self.socket,
                             *token,
@@ -167,7 +180,8 @@ impl WebSocketClient {
 
     pub fn write_handshake(&mut self, poll: &mut Poll, token: &Token) {
         // Get the headers HashMap from the Rc<RefCell<...>> wrapper:
-        let headers = self.headers.borrow();
+        let headers = self.headers.lock().unwrap();
+        // let headers = mutexg
 
         // Find the header that interests us, and generate the key from its value:
         let response_key = gen_key(&headers.get("Sec-WebSocket-Key").unwrap());
@@ -192,8 +206,8 @@ impl WebSocketClient {
             .reregister(&mut self.socket, *token, Interest::READABLE);
     }
 
-    pub fn new(socket: TcpStream) -> WebSocketClient {
-        let headers = Rc::new(RefCell::new(HashMap::new()));
+    pub fn new(socket: TcpStream, sender: mpsc::Sender<(Vec<u8>)>) -> WebSocketClient {
+        let headers = Arc::new(Mutex::new(HashMap::new()));
 
         WebSocketClient {
             socket: socket,
@@ -204,6 +218,7 @@ impl WebSocketClient {
                 current_key: None,
                 headers: headers.clone(),
             }),
+            sender: sender,
         }
     }
 }

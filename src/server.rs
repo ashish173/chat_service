@@ -1,38 +1,28 @@
-// You can run this example from the root of the mio repo:
-// cargo run --example tcp_server --features="os-poll net"
-use mio::net::{TcpListener, TcpStream};
+use mio::net::{TcpListener};
 use mio::{Events, Interest, Poll, Token};
 use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-use websocket::receiver::Receiver;
-// use WebSocketClient;
-
-use crate::client::{self, WebSocketClient};
+use crate::client:: WebSocketClient;
 
 // Setup some tokens to allow us to identify which event is for which socket.
 const SERVER: Token = Token(0);
 
 pub struct WebSocketServer {
     socket: TcpListener,
-    // connections: HashMap<Token, WebSocketClient>,
     token_counter: usize,
-    // receiver: mpsc::Receiver<()>,
-    sender: mpsc::Sender<Vec<u8>>,
+    sender: mpsc::Sender<(Vec<u8>, Token)>,
 }
 
 impl WebSocketServer {
     fn new(
         socket: TcpListener,
-        // receiver: mpsc::Receiver<()>,
-        sender: mpsc::Sender<Vec<u8>>,
+        sender: mpsc::Sender<(Vec<u8>, Token)>,
     ) -> WebSocketServer {
         WebSocketServer {
             socket,
-            // connections: HashMap::new(),
             token_counter: SERVER.0 + 1,
-            // receiver,
             sender,
         }
     }
@@ -43,28 +33,34 @@ impl WebSocketServer {
         Token(next)
     }
 
-    pub fn broadcast(&self, payload: &Vec<u8>) {
+    pub fn broadcast(&self, _payload: &Vec<u8>) {
         //
     }
 }
 
-struct Shared(Arc<Mutex<Connection>>);
+struct Shared {
+    connection: Arc<Mutex<Connection>>,
+    poll: Arc<Mutex<Poll>>,
+}
 
 impl Shared {
     fn new(poll: Poll) -> Shared {
-        Shared(Arc::new(Mutex::new(Connection::new(poll))))
+        Shared {
+            connection: Arc::new(Mutex::new(Connection::new())),
+            poll: Arc::new(Mutex::new(poll)),
+        }
     }
 }
 
 struct Connection {
     clients: HashMap<Token, WebSocketClient>,
-    poll: Poll,
+    // poll: Poll,
 }
 impl Connection {
-    fn new(poll: Poll) -> Connection {
+    fn new() -> Connection {
         Connection {
             clients: HashMap::new(),
-            poll: poll,
+            // poll: poll,
         }
     }
 }
@@ -72,44 +68,56 @@ impl Connection {
 #[tokio::main]
 #[cfg(not(target_os = "wasi"))]
 pub async fn main() -> io::Result<()> {
-    use std::io::Bytes;
+    use std::borrow::BorrowMut;
+    use crate::client::ClientState;
 
-    let mut poll = Poll::new()?;
+    let  poll = Poll::new()?;
     // Create storage for events.
     let mut events = Events::with_capacity(128);
     let shared = Shared::new(poll);
-    let conn = shared.0.clone();
+    // let conn = shared.connection.clone();
+    let recv_poll = shared.poll.clone();
+    let send_poll = shared.poll.clone();
 
     // Setup the TCP server socket.
     let addr = "127.0.0.1:9000".parse().unwrap();
     let mut server = TcpListener::bind(addr)?;
 
-    let conn1 = shared.0.clone();
-    // Register the server with poll we can receive events for it.
-    conn.lock()
+    let recv_conn = shared.connection.clone();
+    let send_conn = shared.connection.clone();
+    recv_poll
+        .lock()
         .unwrap()
-        .poll
         .registry()
         .register(&mut server, SERVER, Interest::READABLE)?;
 
-    let (tx, mut rx) = mpsc::channel::<(Vec<u8>)>(100);
+    let (tx, mut rx) = mpsc::channel::<(Vec<u8>, Token)>(1);
     let mut server = WebSocketServer::new(server, tx);
-    let rxc = server.sender.clone();
+    let _rxc = server.sender.clone();
 
-    println!("before spawn in server:main");
     tokio::spawn(async move {
-        let rec = rx.recv().await.unwrap();
-        // let v = Bytes::from(rec);
-        println!("value received: {:?}", rec);
-        let mut mutg = conn.lock().unwrap();
-        for (k, v) in &mut mutg.clients {
-            v.write(&mut conn.lock().unwrap().poll, &k, "sdf");
+        loop {
+            let rec = rx.recv().await.unwrap();
+            println!("value received: {:?}", rec);
+
+            let payload = std::str::from_utf8(&rec.0).unwrap();
+            let self_token = rec.1;
+            let mut conn = recv_conn.lock().unwrap();
+            for (k, v) in &mut conn.clients.borrow_mut().into_iter() {
+                if k.0 != self_token.0 {
+                    v.write(payload);
+                } else {
+                    println!("excluding {:?} value {:?}", k, payload);
+                }
+            }
         }
     });
 
     loop {
-        conn1.lock().unwrap().poll.poll(&mut events, None)?;
-        // println!("event: {:?}", events);
+        send_poll
+            .lock()
+            .unwrap()
+            .poll(&mut events, Some(std::time::Duration::from_millis(1000)))?;
         for event in events.iter() {
             match event.token() {
                 SERVER => loop {
@@ -118,9 +126,6 @@ pub async fn main() -> io::Result<()> {
                     let mut client = match server.socket.accept() {
                         Ok((connection, _)) => {
                             // add this to shared object
-
-                            // let c = connection.
-
                             WebSocketClient::new(connection, server.sender.clone())
                         }
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -136,36 +141,28 @@ pub async fn main() -> io::Result<()> {
                             return Err(e);
                         }
                     };
-
-                    // println!("Accepted connection from: {}", address);
                     let token = server.next();
-                    // let token = Token(server.token_counter);
-                    conn1.lock().unwrap().poll.registry().register(
+                    send_poll.lock().unwrap().registry().register(
                         &mut client.socket,
                         token,
-                        Interest::WRITABLE,
+                        Interest::READABLE,
                     )?;
-                    // println!("poll registry for token {:?}", token);
-                    // let c = conn2.lock().unwrap().insert(token, v)
-                    conn1.lock().unwrap().clients.insert(token, client);
-                    println!("server and client generated");
-                    // server.connections.insert(token, client);
+                    send_conn.lock().unwrap().clients.insert(token, client);
                 },
                 token => {
                     // Maybe received an event for a TCP connection.
-
-                    // println!("event: {:?}", event);
-                    let mut mutg = conn1.lock().unwrap();
-                    let done = if let Some(client) = mutg.clients.get_mut(&token) {
-                        println!("client {:?}", client);
+                    let mut mutg = send_conn.lock().unwrap();
+                    let _done = if let Some(client) = mutg.clients.get_mut(&token) {
                         if event.is_readable() {
-                            println!("is readable");
-                            let poll = &mut conn1.lock().unwrap().poll;
-                            client.ro();
-                            // client.read(poll, &token);
+                            client.read(&mut send_poll.lock().unwrap(), &token).await;
                         } else if event.is_writable() {
-                            println!("is writable");
-                            client.write(&mut conn1.lock().unwrap().poll, &token, "".into());
+                            match client.state {
+                                ClientState::HandshakeResponse => {
+                                    client.write_handshake(&mut send_poll.lock().unwrap(), &token);
+                                }
+                                ClientState::Connected => todo!(),
+                                ClientState::AwaitingHandshake(_) => todo!(),
+                            }
                         }
                         false
                         // handle_connection_event(poll.registry(), &mut client.socket, event)?
@@ -173,16 +170,6 @@ pub async fn main() -> io::Result<()> {
                         // Sporadic events happen, we can safely ignore them.
                         false
                     };
-                    // if done {
-                    //     if let Some(mut client) = server.connections.remove(&token) {
-                    //         conn1
-                    //             .lock()
-                    //             .unwrap()
-                    //             .poll
-                    //             .registry()
-                    //             .deregister(&mut client.socket)?;
-                    //     }
-                    // }
                 }
             }
         }

@@ -1,5 +1,5 @@
 use chat_service::server;
 
 fn main() {
-    server::main();
+    let _x = server::main();
 }

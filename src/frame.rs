@@ -1,4 +1,3 @@
-// use std::io::u16;
 use std::{
     io::{self, ErrorKind, Read, Write},
     iter,
@@ -50,9 +49,6 @@ pub struct WebSocketFrame {
 
 impl WebSocketFrame {
     pub fn close_from(frame: &WebSocketFrame) -> WebSocketFrame {
-        // take first 2 bytes of payload and send it as payload in the response to the close connection
-        // request
-        // let body =
         let payload = &frame.payload;
 
         let body = if payload.len() > 0 {
@@ -90,18 +86,15 @@ impl WebSocketFrame {
     }
 
     pub fn write(&self, socket: &mut TcpStream) {
-        // write header
-        // std::thread::sleep(std::time::Duration::from_millis(5000));
         self.write_header(socket);
         let res = socket.write(&self.payload);
         match res {
-            Ok(size) => println!("success"),
+            Ok(_size) => println!("success"),
             Err(err) => println!("Error writing {:?}", err),
         }
     }
 
     pub fn write_header(&self, socket: &mut TcpStream) {
-        // let mut buf = [0u8; 8];
         let b1 = (self.header.fin as u8) << 7
             | (self.header.rsv1 as u8) << 6
             | (self.header.rsv2 as u8) << 5
@@ -111,7 +104,6 @@ impl WebSocketFrame {
         let b2 = (self.header.payload_length as u8) & 0x7F;
 
         let buf = ((b1 as u16) << 8) | (b2 as u16);
-        // socket.write(&buf);
         let _ = socket.write_u16::<BigEndian>(buf);
     }
 
@@ -133,26 +125,19 @@ impl WebSocketFrame {
             rsv1: false,
             rsv2: false,
             rsv3: false,
-            opcode: opcode,
+            opcode,
             masked: false,
             payload_length: payload.len() as u8,
         }
     }
 
     pub fn read<R: Read>(socket: &mut R) -> std::io::Result<WebSocketFrame> {
-        // let mut buf = vec![0u8; 1024];
-        println!("read data before big endian");
-
         let buf = socket.read_u16::<BigEndian>()?;
         let header = Self::get_header(buf).map_err(|e| io::Error::new(ErrorKind::Other, e))?;
-        println!("read data from big endian");
-        // get real payload length
         let len = Self::get_pay_length(socket, header.payload_length)?;
         // get mask_key. its 32 bit or 4 bytes
         let mask = if header.masked {
-            // let mut mask = vec![0, 4];
             let mut buf = [0; 4];
-            // let t = socket.read_u32::<BigEndian>();
             let _mask = socket.read(&mut buf)?;
             Some(buf)
         } else {
@@ -168,9 +153,9 @@ impl WebSocketFrame {
         }
 
         Ok(WebSocketFrame {
-            header: header,
-            payload: payload,
-            mask: mask,
+            header,
+            payload,
+            mask,
         })
     }
 

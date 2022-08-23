@@ -34,7 +34,11 @@ fn main() -> std::io::Result<()> {
         for msg in rcv.incoming_messages() {
 
             match msg {
-                Ok(OwnedMessage::Text(ress)) => println!("{:?}", ress),
+                Ok(OwnedMessage::Text(mut ress)) => {
+                    let resss = ress.len();
+                    ress.truncate(resss-1);
+                    println!("{:?}", ress);
+                }
                 Err(_err) => {
                     println!("Server Stopped");
                     break;

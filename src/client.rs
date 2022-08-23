@@ -74,7 +74,6 @@ impl WebSocketClient {
     pub async fn read_frame(&mut self, poll: &mut Poll, token: &Token) {
         // read websocket frame
         let frame = WebSocketFrame::read(&mut self.socket);
-
         match frame {
             Ok(frame) => {
                 match frame.get_opcode() {
@@ -83,7 +82,7 @@ impl WebSocketClient {
                         pong_frame.write(&mut self.socket);
                     }
                     Opcode::TextFrame => {
-                        println!("data received {:?}", std::str::from_utf8(&frame.payload));
+                        println!("rohit data received {:?}", std::str::from_utf8(&frame.payload));
                         let payload = frame.payload.clone();
                         let _x = self.sender.send((payload, token.clone())).await;
                     }
@@ -98,7 +97,7 @@ impl WebSocketClient {
                     _ => {}
                 }
             }
-            Err(err) => println!("error occired {:?}", err),
+            Err(_err) => println!("Connection Closed for {:?}", token),
         }
     }
 

@@ -1,10 +1,10 @@
-use mio::net::{TcpListener};
+use crate::client::WebSocketClient;
+use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
 use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-use crate::client:: WebSocketClient;
 
 // Setup some tokens to allow us to identify which event is for which socket.
 const SERVER: Token = Token(0);
@@ -16,10 +16,7 @@ pub struct WebSocketServer {
 }
 
 impl WebSocketServer {
-    fn new(
-        socket: TcpListener,
-        sender: mpsc::Sender<(Vec<u8>, Token)>,
-    ) -> WebSocketServer {
+    fn new(socket: TcpListener, sender: mpsc::Sender<(Vec<u8>, Token)>) -> WebSocketServer {
         WebSocketServer {
             socket,
             token_counter: SERVER.0 + 1,
@@ -68,10 +65,12 @@ impl Connection {
 #[tokio::main]
 #[cfg(not(target_os = "wasi"))]
 pub async fn main() -> io::Result<()> {
-    use std::borrow::BorrowMut;
-    use crate::client::ClientState;
+    use tracing::metadata::Kind;
 
-    let  poll = Poll::new()?;
+    use crate::client::ClientState;
+    use std::borrow::BorrowMut;
+
+    let poll = Poll::new()?;
     // Create storage for events.
     let mut events = Events::with_capacity(128);
     let shared = Shared::new(poll);
@@ -154,14 +153,28 @@ pub async fn main() -> io::Result<()> {
                     let mut mutg = send_conn.lock().unwrap();
                     let _done = if let Some(client) = mutg.clients.get_mut(&token) {
                         if event.is_readable() {
-                            client.read(&mut send_poll.lock().unwrap(), &token).await;
-                        } else if event.is_writable() {
-                            match client.state {
-                                ClientState::HandshakeResponse => {
-                                    client.write_handshake(&mut send_poll.lock().unwrap(), &token);
+                            let mut new_poll = send_poll.lock().unwrap();
+                            match client.read(&mut new_poll, &token).await {
+                                Ok(res) => {}
+                                Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+                                    if let Some(mut client) = mutg.clients.remove(&token) {
+                                        new_poll.registry().deregister(&mut client.socket)?;
+                                    };
                                 }
-                                ClientState::Connected => todo!(),
-                                ClientState::AwaitingHandshake(_) => todo!(),
+                                Err(_) => {}
+                            }
+                        } else if event.is_writable() {
+                            let a = match client.state {
+                                ClientState::HandshakeResponse => {
+                                    client.write_handshake(&mut send_poll.lock().unwrap(), &token)
+                                }
+                                _ => Ok(()),
+                            };
+                            match a {
+                                Ok(()) => {}
+                                Err(e) => {
+                                    println!("Server::err -> {:?}", e);
+                                }
                             }
                         }
                         false

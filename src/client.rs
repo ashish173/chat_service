@@ -13,6 +13,7 @@ use mio::net::TcpStream;
 
 use crate::frame::{Opcode, WebSocketFrame};
 use crate::http::gen_key;
+// use crate::server::WebSocketServer;
 
 #[derive(Debug)]
 pub struct HttpParser {
@@ -58,11 +59,12 @@ pub enum ClientState {
 }
 
 impl WebSocketClient {
-    pub async fn read(&mut self, poll: &mut Poll, token: &Token) {
+    pub async fn read(&mut self, poll: &mut Poll, token: &Token) -> Result<(), std::io::Error> {
+        println!("in read");
         match self.state {
-            ClientState::AwaitingHandshake(_) => self.read_handshake(poll, token),
-            ClientState::HandshakeResponse => {}
-            ClientState::Connected => self.read_frame(poll, token).await,
+            ClientState::AwaitingHandshake(_) => Ok(self.read_handshake(poll, token)?),
+            ClientState::Connected => Ok(self.read_frame(poll, token).await?),
+            ClientState::HandshakeResponse => todo!(),
         }
     }
 
@@ -71,43 +73,49 @@ impl WebSocketClient {
         let _res = frame.write(&mut self.socket);
     }
 
-    pub async fn read_frame(&mut self, poll: &mut Poll, token: &Token) {
-        // read websocket frame
-        let frame = WebSocketFrame::read(&mut self.socket);
-        match frame {
-            Ok(frame) => {
-                match frame.get_opcode() {
-                    Opcode::Pong => {
-                        let pong_frame = WebSocketFrame::pong(&frame);
-                        pong_frame.write(&mut self.socket);
-                    }
-                    Opcode::TextFrame => {
-                        println!("rohit data received {:?}", std::str::from_utf8(&frame.payload));
-                        let payload = frame.payload.clone();
-                        let _x = self.sender.send((payload, token.clone())).await;
-                    }
-                    Opcode::ConnectionClose => {
-                        // Connection close requset
-                        println!("in connection close");
-                        let close_frame = WebSocketFrame::close_from(&frame);
-                        close_frame.write(&mut self.socket);
-                        let close = poll.registry().deregister(&mut self.socket);
-                        println!("Close result {:?}", close);
-                    }
-                    _ => {}
-                }
+    pub async fn read_frame(
+        &mut self,
+        poll: &mut Poll,
+        token: &Token,
+    ) -> Result<(), std::io::Error> {
+        let frame = WebSocketFrame::read(&mut self.socket)?;
+
+        match frame.get_opcode() {
+            Opcode::Pong => {
+                let pong_frame = WebSocketFrame::pong(&frame);
+                pong_frame.write(&mut self.socket)?;
+                Ok(())
             }
-            Err(_err) => println!("Connection Closed for {:?}", token),
+            Opcode::TextFrame => {
+                println!(
+                    "rohit data received {:?}",
+                    std::str::from_utf8(&frame.payload)
+                );
+                let payload = frame.payload.clone();
+                let _x = self.sender.send((payload, token.clone())).await;
+                Ok(())
+            }
+            Opcode::ConnectionClose => {
+                // Connection close requset
+                println!("in connection close");
+                let close_frame = WebSocketFrame::close_from(&frame);
+                close_frame.write(&mut self.socket)?;
+                let close = poll.registry().deregister(&mut self.socket);
+                println!("Close result {:?}", close);
+                Ok(())
+            }
+            Opcode::BinaryFrame => todo!(),
+            Opcode::Ping => todo!(),
         }
     }
 
-    pub fn read_handshake(&mut self, poll: &mut Poll, token: &Token) {
+    pub fn read_handshake(&mut self, poll: &mut Poll, token: &Token) -> std::io::Result<()> {
         loop {
             let mut buf = [0; 2048];
             match self.socket.read(&mut buf) {
                 Err(e) => {
                     println!("Error while reading socket: {:?}", e);
-                    return;
+                    return Err(std::io::Error::new(std::io::ErrorKind::Other, e));
                 }
                 Ok(_len) => {
                     if _len == 0 {
@@ -130,9 +138,10 @@ impl WebSocketClient {
                 }
             }
         }
+        return Ok(());
     }
 
-    pub fn write_handshake(&mut self, poll: &mut Poll, token: &Token) {
+    pub fn write_handshake(&mut self, poll: &mut Poll, token: &Token) -> std::io::Result<()> {
         let headers = self.headers.lock().unwrap();
         // Find the header that interests us, and generate the key from its value:
         let response_key = gen_key(&headers.get("Sec-WebSocket-Key").unwrap());
@@ -145,15 +154,16 @@ impl WebSocketClient {
         ));
 
         // Write the response to the socket:
-        let _res = self.socket.write_all(response.as_bytes());
+        self.socket.write_all(response.as_bytes())?;
 
         // Change the state:
         self.state = ClientState::Connected;
 
         // And change the interest back to `readable()`:
-        let _ = poll
-            .registry()
+        poll.registry()
             .reregister(&mut self.socket, *token, Interest::READABLE);
+
+        Ok(())
     }
 
     pub fn new(socket: TcpStream, sender: mpsc::Sender<(Vec<u8>, Token)>) -> WebSocketClient {

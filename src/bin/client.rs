@@ -32,11 +32,10 @@ fn main() -> std::io::Result<()> {
 
     std::thread::spawn(move || {
         for msg in rcv.incoming_messages() {
-
             match msg {
                 Ok(OwnedMessage::Text(mut ress)) => {
                     let resss = ress.len();
-                    ress.truncate(resss-1);
+                    ress.truncate(resss - 1);
                     println!("{:?}", ress);
                 }
                 Err(_err) => {
@@ -52,6 +51,7 @@ fn main() -> std::io::Result<()> {
         let mut buffer = String::new();
         // TODO capture ctrl+c , close socket connection and Exit.
         let _word = std::io::stdin().read_line(&mut buffer)?;
+        // capture in tokio select
         send_message(&mut snd, buffer);
     }
 }

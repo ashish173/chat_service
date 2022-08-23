@@ -85,13 +85,10 @@ impl WebSocketFrame {
         self.header.opcode
     }
 
-    pub fn write(&self, socket: &mut TcpStream) {
+    pub fn write(&self, socket: &mut TcpStream) -> Result<(), std::io::Error> {
         self.write_header(socket);
-        let res = socket.write(&self.payload);
-        match res {
-            Ok(_size) => println!("success"),
-            Err(err) => println!("Error writing {:?}", err),
-        }
+        socket.write(&self.payload)?;
+        Ok(())
     }
 
     pub fn write_header(&self, socket: &mut TcpStream) {

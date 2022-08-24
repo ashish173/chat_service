@@ -13,6 +13,7 @@ use mio::net::TcpStream;
 
 use crate::frame::{Opcode, WebSocketFrame};
 use crate::http::gen_key;
+use crate::server::ServerMessage;
 // use crate::server::WebSocketServer;
 
 #[derive(Debug)]
@@ -28,7 +29,7 @@ pub struct WebSocketClient {
     pub interest: Interest,
     pub state: ClientState,
     pub headers: Arc<Mutex<HashMap<String, String>>>,
-    pub sender: mpsc::Sender<(Vec<u8>, Token)>,
+    pub sender: mpsc::Sender<ServerMessage>,
 }
 
 impl ParserHandler for HttpParser {
@@ -68,9 +69,10 @@ impl WebSocketClient {
         }
     }
 
-    pub fn write(&mut self, payload: &str) {
+    pub fn write(&mut self, payload: &str) -> std::io::Result<()> {
         let frame = WebSocketFrame::from(payload);
-        let _res = frame.write(&mut self.socket);
+        frame.write(&mut self.socket)?;
+        Ok(())
     }
 
     pub async fn read_frame(
@@ -87,21 +89,19 @@ impl WebSocketClient {
                 Ok(())
             }
             Opcode::TextFrame => {
-                println!(
-                    "rohit data received {:?}",
-                    std::str::from_utf8(&frame.payload)
-                );
+                println!("recieved: {:?}", std::str::from_utf8(&frame.payload));
                 let payload = frame.payload.clone();
-                let _x = self.sender.send((payload, token.clone())).await;
+                let message = ServerMessage::Text(payload, token.clone());
+                let _x = self.sender.send(message).await;
                 Ok(())
             }
             Opcode::ConnectionClose => {
                 // Connection close requset
-                println!("in connection close");
                 let close_frame = WebSocketFrame::close_from(&frame);
                 close_frame.write(&mut self.socket)?;
-                let close = poll.registry().deregister(&mut self.socket);
-                println!("Close result {:?}", close);
+                let _close = poll.registry().deregister(&mut self.socket);
+                let message = ServerMessage::Close(token.clone());
+                let _ = self.sender.send(message).await;
                 Ok(())
             }
             Opcode::BinaryFrame => todo!(),
@@ -160,13 +160,14 @@ impl WebSocketClient {
         self.state = ClientState::Connected;
 
         // And change the interest back to `readable()`:
-        poll.registry()
+        let _ = poll
+            .registry()
             .reregister(&mut self.socket, *token, Interest::READABLE);
 
         Ok(())
     }
 
-    pub fn new(socket: TcpStream, sender: mpsc::Sender<(Vec<u8>, Token)>) -> WebSocketClient {
+    pub fn new(socket: TcpStream, sender: mpsc::Sender<ServerMessage>) -> WebSocketClient {
         let headers = Arc::new(Mutex::new(HashMap::new()));
 
         WebSocketClient {

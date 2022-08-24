@@ -9,14 +9,20 @@ use tokio::sync::mpsc;
 // Setup some tokens to allow us to identify which event is for which socket.
 const SERVER: Token = Token(0);
 
+#[derive(Debug)]
+pub enum ServerMessage {
+    Text(Vec<u8>, Token),
+    Close(Token),
+}
+
 pub struct WebSocketServer {
     socket: TcpListener,
     token_counter: usize,
-    sender: mpsc::Sender<(Vec<u8>, Token)>,
+    sender: mpsc::Sender<ServerMessage>,
 }
 
 impl WebSocketServer {
-    fn new(socket: TcpListener, sender: mpsc::Sender<(Vec<u8>, Token)>) -> WebSocketServer {
+    fn new(socket: TcpListener, sender: mpsc::Sender<ServerMessage>) -> WebSocketServer {
         WebSocketServer {
             socket,
             token_counter: SERVER.0 + 1,
@@ -65,8 +71,6 @@ impl Connection {
 #[tokio::main]
 #[cfg(not(target_os = "wasi"))]
 pub async fn main() -> io::Result<()> {
-    use tracing::metadata::Kind;
-
     use crate::client::ClientState;
     use std::borrow::BorrowMut;
 
@@ -90,23 +94,34 @@ pub async fn main() -> io::Result<()> {
         .registry()
         .register(&mut server, SERVER, Interest::READABLE)?;
 
-    let (tx, mut rx) = mpsc::channel::<(Vec<u8>, Token)>(1);
+    let (tx, mut rx) = mpsc::channel::<ServerMessage>(1);
     let mut server = WebSocketServer::new(server, tx);
     let _rxc = server.sender.clone();
 
+    // broadcast replies to clients
     tokio::spawn(async move {
         loop {
             let rec = rx.recv().await.unwrap();
-            println!("value received: {:?}", rec);
 
-            let payload = std::str::from_utf8(&rec.0).unwrap();
-            let self_token = rec.1;
-            let mut conn = recv_conn.lock().unwrap();
-            for (k, v) in &mut conn.clients.borrow_mut().into_iter() {
-                if k.0 != self_token.0 {
-                    v.write(payload);
-                } else {
-                    println!("excluding {:?} value {:?}", k, payload);
+            println!("testing .... {:?}", rec);
+            match rec {
+                ServerMessage::Text(data, self_token) => {
+                    let payload = std::str::from_utf8(&data).unwrap();
+                    let mut conn = recv_conn.lock().unwrap();
+
+                    for (k, v) in &mut conn.clients.borrow_mut().into_iter() {
+                        if k.0 != self_token.0 {
+                            println!("token: {:?}", k);
+                            let _ = v.write(payload);
+                        } else {
+                            println!("excluding {:?} value {:?}", k, payload);
+                        }
+                    }
+                }
+                ServerMessage::Close(token) => {
+                    // client closed, remove from webserver object
+                    println!("client is getting closed");
+                    recv_conn.lock().unwrap().clients.remove(&token);
                 }
             }
         }
@@ -155,7 +170,7 @@ pub async fn main() -> io::Result<()> {
                         if event.is_readable() {
                             let mut new_poll = send_poll.lock().unwrap();
                             match client.read(&mut new_poll, &token).await {
-                                Ok(res) => {}
+                                Ok(_res) => {} // do nothing if read is successful
                                 Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
                                     if let Some(mut client) = mutg.clients.remove(&token) {
                                         new_poll.registry().deregister(&mut client.socket)?;

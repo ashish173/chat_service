@@ -1,57 +1,102 @@
-use clap::Parser;
 use std::net::TcpStream;
-use websocket::sync::{Client, Writer};
-use websocket::{ClientBuilder, Message, OwnedMessage};
+use tokio::sync::mpsc::{self, Receiver};
 
-fn create_connection() -> Client<std::net::TcpStream> {
-    let client = ClientBuilder::new("ws://localhost:9000")
-        .unwrap()
-        .connect_insecure()
-        .unwrap();
-    client
-}
+use tokio::signal;
+use websocket::sync::{Reader, Writer};
+use websocket::{ClientBuilder, Message, OwnedMessage};
 
 fn send_message(writer: &mut Writer<TcpStream>, msg: String) {
     let m = Message::text(msg);
     let _ = writer.send_message(&m);
 }
 
-fn _close(_conn: &mut Client<TcpStream>) {
-    // send close request
+struct StdInput {
+    recv: Receiver<String>,
 }
 
-#[derive(Parser, Debug)]
-struct Cli {
-    name: String,
+impl StdInput {
+    fn new() -> StdInput {
+        let (snd, recv) = mpsc::channel::<String>(500);
+        std::thread::spawn(move || loop {
+            let mut buffer = String::new();
+            let _word = std::io::stdin().read_line(&mut buffer);
+
+            let _ = snd.blocking_send(buffer);
+        });
+
+        StdInput { recv }
+    }
+
+    async fn receive_input(&mut self, sender: &mut Writer<TcpStream>) {
+        loop {
+            let res = self.recv.recv().await;
+            send_message(sender, res.unwrap());
+        }
+    }
 }
 
-fn main() -> std::io::Result<()> {
-    // command
-    let conn = create_connection();
-    let (mut rcv, mut snd) = conn.split().unwrap();
+struct Connection {
+    // builder: Client<TcpStream>,
+    sender: Writer<TcpStream>,
+    receiver: Reader<TcpStream>,
+}
+impl Connection {
+    fn new(addr: &str) -> Connection {
+        let cb = ClientBuilder::new(addr)
+            .unwrap()
+            .connect_insecure()
+            .unwrap();
+        let (recv, send) = cb.split().unwrap();
+        Connection {
+            sender: send,
+            receiver: recv,
+        }
+    }
 
+    fn close(sender: &mut Writer<TcpStream>) {
+        let close_msg = Message::close();
+        let res = sender.send_message(&close_msg);
+        println!("res {:?}", res);
+    }
+}
+
+fn receive_incoming_messages(mut recv: Reader<TcpStream>) {
     std::thread::spawn(move || {
-        for msg in rcv.incoming_messages() {
+        for msg in recv.incoming_messages() {
             match msg {
-                Ok(OwnedMessage::Text(mut ress)) => {
-                    let resss = ress.len();
-                    ress.truncate(resss - 1);
-                    println!("{:?}", ress);
-                }
-                Err(_err) => {
-                    println!("Server Stopped");
+                Ok(OwnedMessage::Close(None)) => {
+                    println!("received close message");
                     break;
                 }
-                _ => {}
+                Ok(OwnedMessage::Text(s)) => {
+                    println!("message {}", s);
+                }
+                Err(_err) => return,
+                _ => break,
             }
         }
     });
+}
 
-    loop {
-        let mut buffer = String::new();
-        // TODO capture ctrl+c , close socket connection and Exit.
-        let _word = std::io::stdin().read_line(&mut buffer)?;
-        // capture in tokio select
-        send_message(&mut snd, buffer);
+#[tokio::main]
+async fn main() {
+    let mut conn = Connection::new("ws://127.0.0.1:9000");
+    // let (recv, mut send) = conn.split().unwrap();
+    let shutdown = signal::ctrl_c();
+
+    receive_incoming_messages(conn.receiver);
+
+    let mut reader = StdInput::new();
+
+    // capture in tokio select
+    tokio::select! {
+            _res = reader.receive_input(&mut conn.sender) => {
+                println!("accepting stops");
+            }
+            _ = shutdown => {
+                println!("captured shutdown");
+                // websocket close frame.
+                Connection::close(&mut conn.sender);
+            }
     }
 }

@@ -116,7 +116,7 @@ pub async fn run() -> io::Result<()> {
                     for (k, v) in &mut conn.clients.borrow_mut().into_iter() {
                         if k.0 != self_token.0 {
                             println!("token: {:?}", k);
-                            let _ = v.write(payload);
+                            let _ = v.connection.write(payload);
                         } else {
                             println!("excluding {:?} value {:?}", k, payload);
                         }
@@ -167,7 +167,7 @@ pub async fn run() -> io::Result<()> {
                     };
                     let token = server.next();
                     send_poll.lock().await.registry().register(
-                        &mut client.socket,
+                        &mut client.connection.socket,
                         token,
                         Interest::READABLE,
                     )?;
@@ -186,10 +186,10 @@ pub async fn run() -> io::Result<()> {
                                 let _x = process_method(send_poll, send_conn, token).await;
                             });
                         } else if event.is_writable() {
-                            let a = match client.state {
+                            let a = match client.connection.state {
                                 ClientState::HandshakeResponse => {
                                     let poll = &mut send_poll.lock().await;
-                                    client.write_handshake(poll, &token)
+                                    client.connection.write_handshake(poll, &token)
                                 }
                                 _ => Ok(()),
                             };
@@ -224,21 +224,22 @@ async fn process_method(
     let mut send_conn = send_conn.lock().await;
 
     if let Some(client) = send_conn.clients.get_mut(&token) {
-        let _ = match client.read(&mut new_poll, &token).await {
-            Ok(_res) => Ok(()), // do nothing if read is successful
-            Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
-                println!("inside some client {:?}", token);
+        tokio::select! {
+            res = client.connection.read(&mut new_poll, &token) => {
+                // Ok(_res) => Ok(()), // do nothing if read is successful
+                // Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+                //     println!("inside some client {:?}", token);
 
-                Ok(if let Some(mut client) = send_conn.clients.remove(&token) {
-                    let _ = new_poll.registry().deregister(&mut client.socket)?;
-                })
+                //     Ok(if let Some(mut client) = send_conn.clients.remove(&token) {
+                //         let _ = new_poll.registry().deregister(&mut client.socket)?;
+                //     })
+                // }
+
+                // _ => Err(Error::new(std::io::ErrorKind::Other, "")),
+                println!("client going out of scope.");
             }
-
-            _ => Err(Error::new(std::io::ErrorKind::Other, "")),
-        };
-    } else {
-        println!("client not found {:?}", token);
-    }
+        }
+    };
 
     Ok(())
 }

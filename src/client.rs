@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, Sender};
 
 use http_muncher::{Parser, ParserHandler};
 use mio::net::TcpStream;
@@ -23,7 +23,7 @@ pub struct HttpParser {
 }
 
 #[derive(Debug)]
-pub struct WebSocketClient {
+pub struct Connect {
     pub socket: TcpStream,
     pub parser: Parser,
     pub interest: Interest,
@@ -32,38 +32,7 @@ pub struct WebSocketClient {
     pub sender: mpsc::Sender<ServerMessage>,
 }
 
-unsafe impl Send for WebSocketClient {}
-unsafe impl Sync for WebSocketClient {}
-
-impl ParserHandler for HttpParser {
-    fn on_header_field(&mut self, _p: &mut Parser, s: &[u8]) -> bool {
-        self.current_key = Some(std::str::from_utf8(s).unwrap().to_string());
-        true
-    }
-
-    fn on_header_value(&mut self, _p: &mut Parser, s: &[u8]) -> bool {
-        let mut r = self.headers.lock().unwrap();
-        r.insert(
-            self.current_key.clone().unwrap(),
-            std::str::from_utf8(s).unwrap().to_string(),
-        );
-        true
-    }
-
-    fn on_headers_complete(&mut self, _p: &mut Parser) -> bool {
-        false
-    }
-}
-
-#[derive(Debug)]
-pub enum ClientState {
-    AwaitingHandshake(HttpParser),
-    HandshakeResponse,
-    Connected,
-}
-
-
-impl WebSocketClient {
+impl Connect {
     pub async fn read(&mut self, poll: &mut Poll, token: &Token) -> Result<(), std::io::Error> {
         println!("in read");
         match self.state {
@@ -171,10 +140,10 @@ impl WebSocketClient {
         Ok(())
     }
 
-    pub fn new(socket: TcpStream, sender: mpsc::Sender<ServerMessage>) -> WebSocketClient {
+    pub fn new(socket: TcpStream, sender: mpsc::Sender<ServerMessage>) -> Connect {
         let headers = Arc::new(Mutex::new(HashMap::new()));
 
-        WebSocketClient {
+        Connect {
             socket,
             parser: Parser::request(),
             interest: Interest::READABLE,
@@ -183,7 +152,51 @@ impl WebSocketClient {
                 current_key: None,
                 headers: headers.clone(),
             }),
-            sender: sender,
+            sender,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct WebSocketClient {
+    // pub socket: TcpStream,
+    pub connection: Connect,
+}
+
+unsafe impl Send for WebSocketClient {}
+unsafe impl Sync for WebSocketClient {}
+
+impl ParserHandler for HttpParser {
+    fn on_header_field(&mut self, _p: &mut Parser, s: &[u8]) -> bool {
+        self.current_key = Some(std::str::from_utf8(s).unwrap().to_string());
+        true
+    }
+
+    fn on_header_value(&mut self, _p: &mut Parser, s: &[u8]) -> bool {
+        let mut r = self.headers.lock().unwrap();
+        r.insert(
+            self.current_key.clone().unwrap(),
+            std::str::from_utf8(s).unwrap().to_string(),
+        );
+        true
+    }
+
+    fn on_headers_complete(&mut self, _p: &mut Parser) -> bool {
+        false
+    }
+}
+
+#[derive(Debug)]
+pub enum ClientState {
+    AwaitingHandshake(HttpParser),
+    HandshakeResponse,
+    Connected,
+}
+
+impl WebSocketClient {
+    pub fn new(socket: TcpStream, sender: Sender<ServerMessage>) -> WebSocketClient {
+        WebSocketClient {
+            connection: Connect::new(socket, sender),
         }
     }
 }

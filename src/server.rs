@@ -2,9 +2,9 @@ use crate::client::WebSocketClient;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
 use std::collections::HashMap;
-use std::io;
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
+use std::io::{self, Error};
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
 
 // Setup some tokens to allow us to identify which event is for which socket.
 const SERVER: Token = Token(0);
@@ -59,6 +59,9 @@ struct Connection {
     clients: HashMap<Token, WebSocketClient>,
     // poll: Poll,
 }
+unsafe impl Send for Connection {}
+unsafe impl Sync for Connection {}
+
 impl Connection {
     fn new() -> Connection {
         Connection {
@@ -68,9 +71,9 @@ impl Connection {
     }
 }
 
-#[tokio::main]
+// #[tokio::main]
 #[cfg(not(target_os = "wasi"))]
-pub async fn main() -> io::Result<()> {
+pub async fn run() -> io::Result<()> {
     use crate::client::ClientState;
     use std::borrow::BorrowMut;
 
@@ -90,7 +93,8 @@ pub async fn main() -> io::Result<()> {
     let send_conn = shared.connection.clone();
     recv_poll
         .lock()
-        .unwrap()
+        .await
+        // .unwrap()
         .registry()
         .register(&mut server, SERVER, Interest::READABLE)?;
 
@@ -107,7 +111,7 @@ pub async fn main() -> io::Result<()> {
             match rec {
                 ServerMessage::Text(data, self_token) => {
                     let payload = std::str::from_utf8(&data).unwrap();
-                    let mut conn = recv_conn.lock().unwrap();
+                    let mut conn = recv_conn.lock().await;
 
                     for (k, v) in &mut conn.clients.borrow_mut().into_iter() {
                         if k.0 != self_token.0 {
@@ -121,7 +125,8 @@ pub async fn main() -> io::Result<()> {
                 ServerMessage::Close(token) => {
                     // client closed, remove from webserver object
                     println!("client is getting closed");
-                    recv_conn.lock().unwrap().clients.remove(&token);
+                    recv_conn.lock().await.clients.remove(&token);
+                    // recv_poll.lock().await.registry().deregister(source)
                 }
             }
         }
@@ -130,9 +135,14 @@ pub async fn main() -> io::Result<()> {
     loop {
         send_poll
             .lock()
-            .unwrap()
-            .poll(&mut events, Some(std::time::Duration::from_millis(1000)))?;
+            .await
+            .poll(&mut events, Some(std::time::Duration::from_millis(100)))?;
         for event in events.iter() {
+            println!(
+                "new event recieved token: {:?} eventreda: {:?}",
+                event.token(),
+                event.is_readable()
+            );
             match event.token() {
                 SERVER => loop {
                     // Received an event for the TCP server socket, which
@@ -156,32 +166,30 @@ pub async fn main() -> io::Result<()> {
                         }
                     };
                     let token = server.next();
-                    send_poll.lock().unwrap().registry().register(
+                    send_poll.lock().await.registry().register(
                         &mut client.socket,
                         token,
                         Interest::READABLE,
                     )?;
-                    send_conn.lock().unwrap().clients.insert(token, client);
+                    send_conn.lock().await.clients.insert(token, client);
                 },
                 token => {
                     // Maybe received an event for a TCP connection.
-                    let mut mutg = send_conn.lock().unwrap();
+                    let mut mutg = send_conn.lock().await;
                     let _done = if let Some(client) = mutg.clients.get_mut(&token) {
                         if event.is_readable() {
-                            let mut new_poll = send_poll.lock().unwrap();
-                            match client.read(&mut new_poll, &token).await {
-                                Ok(_res) => {} // do nothing if read is successful
-                                Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
-                                    if let Some(mut client) = mutg.clients.remove(&token) {
-                                        new_poll.registry().deregister(&mut client.socket)?;
-                                    };
-                                }
-                                Err(_) => {}
-                            }
+                            let send_poll = send_poll.clone();
+                            let send_conn = send_conn.clone();
+                            let token = token.clone();
+
+                            tokio::spawn(async move {
+                                let _x = process_method(send_poll, send_conn, token).await;
+                            });
                         } else if event.is_writable() {
                             let a = match client.state {
                                 ClientState::HandshakeResponse => {
-                                    client.write_handshake(&mut send_poll.lock().unwrap(), &token)
+                                    let poll = &mut send_poll.lock().await;
+                                    client.write_handshake(poll, &token)
                                 }
                                 _ => Ok(()),
                             };
@@ -202,4 +210,35 @@ pub async fn main() -> io::Result<()> {
             }
         }
     }
+}
+
+async fn process_method(
+    send_poll: Arc<Mutex<Poll>>,
+    send_conn: Arc<Mutex<Connection>>,
+    token: Token,
+) -> std::io::Result<()> {
+    println!("trying to aquire  {:?}", token);
+    let mut new_poll = send_poll.lock().await;
+    println!("already aquire {:?}", token);
+
+    let mut send_conn = send_conn.lock().await;
+
+    if let Some(client) = send_conn.clients.get_mut(&token) {
+        let _ = match client.read(&mut new_poll, &token).await {
+            Ok(_res) => Ok(()), // do nothing if read is successful
+            Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+                println!("inside some client {:?}", token);
+
+                Ok(if let Some(mut client) = send_conn.clients.remove(&token) {
+                    let _ = new_poll.registry().deregister(&mut client.socket)?;
+                })
+            }
+
+            _ => Err(Error::new(std::io::ErrorKind::Other, "")),
+        };
+    } else {
+        println!("client not found {:?}", token);
+    }
+
+    Ok(())
 }

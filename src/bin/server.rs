@@ -1,5 +1,6 @@
 use chat_service::server;
 
-fn main() {
-    let _x = server::main();
+#[tokio::main]
+pub async fn main() {
+    let _x = server::run().await;
 }

@@ -34,7 +34,6 @@ impl StdInput {
         }
     }
 }
-
 struct Connection {
     // builder: Client<TcpStream>,
     sender: Writer<TcpStream>,
@@ -60,9 +59,10 @@ impl Connection {
     }
 }
 
-fn receive_incoming_messages(mut recv: Reader<TcpStream>) {
+async fn receive_incoming_messages(mut recv: Reader<TcpStream>, send: mpsc::Sender<()>) {
     std::thread::spawn(move || {
         for msg in recv.incoming_messages() {
+            println!("incoming {:?}", &msg);
             match msg {
                 Ok(OwnedMessage::Close(None)) => {
                     println!("received close message");
@@ -71,7 +71,12 @@ fn receive_incoming_messages(mut recv: Reader<TcpStream>) {
                 Ok(OwnedMessage::Text(s)) => {
                     println!("message {}", s);
                 }
-                Err(_err) => return,
+                Err(_err) => {
+                    println!("in server closed {:?}", _err);
+                    // drop(conn);
+                    let _ = send.blocking_send(());
+                    break;
+                }
                 _ => break,
             }
         }
@@ -84,9 +89,9 @@ async fn main() {
     // let (recv, mut send) = conn.split().unwrap();
     let shutdown = signal::ctrl_c();
 
-    receive_incoming_messages(conn.receiver);
-
     let mut reader = StdInput::new();
+    let (send, mut recv) = tokio::sync::mpsc::channel::<()>(10);
+    receive_incoming_messages(conn.receiver, send).await;
 
     // capture in tokio select
     tokio::select! {
@@ -98,5 +103,22 @@ async fn main() {
                 // websocket close frame.
                 Connection::close(&mut conn.sender);
             }
+            _ = accept_message(&mut recv) => {
+                // closing connection
+                println!("closing connection");
+            }
+
+    }
+}
+
+async fn accept_message(recv: &mut Receiver<()>) -> std::io::Result<()> {
+    loop {
+        let done = match recv.recv().await {
+            Some(_c) => true,
+            None => false,
+        };
+        if done {
+            return Ok(());
+        }
     }
 }

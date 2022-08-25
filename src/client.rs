@@ -32,6 +32,9 @@ pub struct WebSocketClient {
     pub sender: mpsc::Sender<ServerMessage>,
 }
 
+unsafe impl Send for WebSocketClient {}
+unsafe impl Sync for WebSocketClient {}
+
 impl ParserHandler for HttpParser {
     fn on_header_field(&mut self, _p: &mut Parser, s: &[u8]) -> bool {
         self.current_key = Some(std::str::from_utf8(s).unwrap().to_string());
@@ -58,6 +61,7 @@ pub enum ClientState {
     HandshakeResponse,
     Connected,
 }
+
 
 impl WebSocketClient {
     pub async fn read(&mut self, poll: &mut Poll, token: &Token) -> Result<(), std::io::Error> {

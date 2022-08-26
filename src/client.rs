@@ -30,11 +30,17 @@ pub struct Connect {
     pub state: ClientState,
     pub headers: Arc<Mutex<HashMap<String, String>>>,
     pub sender: mpsc::Sender<ServerMessage>,
+    pub test_receiver: Option<tokio::sync::broadcast::Receiver<()>>,
 }
 
 impl Connect {
     pub async fn read(&mut self, poll: &mut Poll, token: &Token) -> Result<(), std::io::Error> {
-        println!("in read");
+        println!("in read starting to listen");
+
+        let _ = self.test_receiver.as_mut().unwrap().recv().await;
+
+        println!("we have received the message");
+
         match self.state {
             ClientState::AwaitingHandshake(_) => Ok(self.read_handshake(poll, token)?),
             ClientState::Connected => Ok(self.read_frame(poll, token).await?),
@@ -140,7 +146,11 @@ impl Connect {
         Ok(())
     }
 
-    pub fn new(socket: TcpStream, sender: mpsc::Sender<ServerMessage>) -> Connect {
+    pub fn new(
+        socket: TcpStream,
+        sender: mpsc::Sender<ServerMessage>,
+        test_receiver: tokio::sync::broadcast::Sender<()>,
+    ) -> Connect {
         let headers = Arc::new(Mutex::new(HashMap::new()));
 
         Connect {
@@ -153,6 +163,7 @@ impl Connect {
                 headers: headers.clone(),
             }),
             sender,
+            test_receiver: Some(test_receiver.subscribe()),
         }
     }
 }
@@ -161,6 +172,8 @@ impl Connect {
 pub struct WebSocketClient {
     // pub socket: TcpStream,
     pub connection: Connect,
+    pub shutdown: Shutdown,
+    pub shutdown_notifier: mpsc::Sender<()>,
 }
 
 unsafe impl Send for WebSocketClient {}
@@ -193,10 +206,38 @@ pub enum ClientState {
     Connected,
 }
 
+#[derive(Debug)]
+pub struct Shutdown {
+    shutdown: tokio::sync::broadcast::Receiver<()>,
+    // shutdown: Shutdown,
+}
+
+impl Shutdown {
+    pub fn new(subscription: tokio::sync::broadcast::Receiver<()>) -> Shutdown {
+        Shutdown {
+            shutdown: subscription,
+        }
+    }
+
+    pub async fn listen_shut(&mut self) -> Result<(), tokio::sync::broadcast::error::RecvError> {
+        println!("shutdown starting to listen");
+        self.shutdown.recv().await?;
+        println!("shutdown message received");
+        Ok(())
+    }
+}
+
 impl WebSocketClient {
-    pub fn new(socket: TcpStream, sender: Sender<ServerMessage>) -> WebSocketClient {
+    pub fn new(
+        socket: TcpStream,
+        sender: Sender<ServerMessage>,
+        notifier: tokio::sync::broadcast::Sender<()>,
+        shutdown_notifier: mpsc::Sender<()>,
+    ) -> WebSocketClient {
         WebSocketClient {
-            connection: Connect::new(socket, sender),
+            connection: Connect::new(socket, sender, notifier.clone()),
+            shutdown: Shutdown::new(notifier.subscribe()),
+            shutdown_notifier,
         }
     }
 }

@@ -236,10 +236,16 @@ pub async fn listen_events(
             }
             _ = shutdown => {
                 println!("in shutdown");
+                // If read takes more time then this handler will run on shutdown signal
                 // TODO: The abort doesn't seem to work here. Ideally, the timeout in polling isn't needed
                 // TODO: the abort should take care of closing the thread.
-                // drop(notifier.clone());
-                // n.handle.abort();
+                let keys_lock = send_conn.lock().await;
+                let keys = keys_lock.clients.keys().cloned().collect::<Vec<Token>>();
+                drop(keys_lock);
+                for key in keys {
+                    println!("in for loop {:?}", key);
+                    let _ = send_conn.lock().await.clients.remove(&key);
+                }
                 Err(())
             }
         };

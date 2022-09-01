@@ -37,7 +37,11 @@ impl Connect {
     pub async fn read(&mut self, poll: &mut Poll, token: &Token) -> Result<(), std::io::Error> {
         println!("in read starting to listen");
 
-        let _ = self.test_receiver.as_mut().unwrap().recv().await;
+        // Testing code
+        // Uncomment this line to test graceful shutdown of clients
+        // When uncommented the read method for any client connection
+        // suspends execution here waiting for a mpsc message received
+        // let _ = self.test_receiver.as_mut().unwrap().recv().await;
 
         match self.state {
             ClientState::AwaitingHandshake(_) => Ok(self.read_handshake(poll, token)?),

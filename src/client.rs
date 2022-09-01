@@ -78,9 +78,11 @@ impl Connect {
             }
             Opcode::ConnectionClose => {
                 // Connection close requset
+                println!("in close connection {:?}", token);
                 let close_frame = WebSocketFrame::close_from(&frame);
                 close_frame.write(&mut self.socket)?;
                 let _close = poll.registry().deregister(&mut self.socket);
+                println!("close {:?}", _close);
                 let message = ServerMessage::Close(token.clone());
                 let _ = self.sender.send(message).await;
                 Ok(())

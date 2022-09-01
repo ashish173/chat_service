@@ -1,8 +1,9 @@
 use crate::client::{ClientState, WebSocketClient};
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
+use std::borrow::BorrowMut;
 use std::collections::HashMap;
-use std::io::{self, Error};
+use std::io;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 
@@ -15,6 +16,18 @@ pub enum ServerMessage {
     Close(Token),
     None,
 }
+
+struct Shared {
+    connection: Arc<Mutex<Connection>>,
+    poll: Arc<Mutex<Poll>>,
+}
+
+pub struct Connection {
+    clients: HashMap<Token, WebSocketClient>,
+    // poll: Poll,
+}
+unsafe impl Send for Connection {}
+unsafe impl Sync for Connection {}
 
 pub struct WebSocketServer {
     socket: TcpListener,
@@ -36,15 +49,6 @@ impl WebSocketServer {
         self.token_counter += 1;
         Token(next)
     }
-
-    pub fn broadcast(&self, _payload: &Vec<u8>) {
-        //
-    }
-}
-
-struct Shared {
-    connection: Arc<Mutex<Connection>>,
-    poll: Arc<Mutex<Poll>>,
 }
 
 impl Shared {
@@ -56,13 +60,6 @@ impl Shared {
     }
 }
 
-pub struct Connection {
-    clients: HashMap<Token, WebSocketClient>,
-    // poll: Poll,
-}
-unsafe impl Send for Connection {}
-unsafe impl Sync for Connection {}
-
 impl Connection {
     fn new() -> Connection {
         Connection {
@@ -71,34 +68,8 @@ impl Connection {
         }
     }
 }
-use tokio::sync::broadcast::Sender;
 
-pub async fn fun(notifier: Sender<()>) -> io::Result<()> {
-    let addr = "127.0.0.1:9000".parse().unwrap();
-    let mut server = TcpListener::bind(addr)?;
-    // loop {
-    //     let (socket, _) = server.accept()?;
-    // }
-    let mut listen = notifier.subscribe();
-    println!("before message");
-    if let Ok(res) = listen.recv().await {
-        println!("res {:?}", res);
-    }
-    println!("after message");
-
-    Ok(())
-}
-
-// #[tokio::main]
-// #[cfg(not(target_os = "wasi"))]
 pub async fn run() -> io::Result<()> {
-    // use tokio::sync::broadcast::Sender;
-    let (notifier, shutdown_receiver) = tokio::sync::broadcast::channel::<()>(100);
-
-    use crate::client::ClientState;
-    use std::borrow::BorrowMut;
-    let shutdown = tokio::signal::ctrl_c();
-
     let poll = Poll::new()?;
     // Create storage for events.
     let mut events = Events::with_capacity(128);
@@ -161,26 +132,21 @@ pub async fn run() -> io::Result<()> {
         }
     });
 
-    let _ = listen_events(send_poll, &mut events, &mut server, notifier, send_conn).await;
+    let _ = listen_events(send_poll, &mut events, &mut server, send_conn).await;
 
     Ok(())
 }
 
 struct Polling {
     recv: mpsc::Receiver<Arc<Mutex<Events>>>,
-    handle: tokio::task::JoinHandle<()>,
 }
 
 impl Polling {
     fn new(poll: Arc<Mutex<Poll>>) -> Polling {
-        // mpsc
         let (send, recv) = mpsc::channel::<Arc<Mutex<Events>>>(10);
         let events = Arc::new(Mutex::new(Events::with_capacity(100)));
-        // new thread
-        let handle = tokio::spawn(async move {
-            // loop {
+        tokio::spawn(async move {
             let mut clone_events = events.lock().await;
-            // println!("waiting starts");
             //TODO: the poll will timeout at 1 sec. If no timeout is passed then the
             //TODO: thread is alive waiting for readiness and thread doens't go out of
             //TODO: scope. This more of a hack. Ideally, we should abort this task using joinhandle.
@@ -188,30 +154,21 @@ impl Polling {
                 .lock()
                 .await
                 .poll(&mut clone_events, Some(std::time::Duration::from_secs(1)));
-            // println!("message received");
-            // let event_clone = events.cl
-            // println!("event {:?}", events.lock().await);
             let _ = send.send(events.clone()).await;
-            // }
         });
 
-        Polling { recv, handle }
+        Polling { recv }
     }
 
     async fn recieve_event(&mut self) -> Option<Arc<Mutex<Events>>> {
-        println!("waiting to send event");
         self.recv.recv().await
-        // r.lock().await.into()
     }
-
-    // fn abort_task()
 }
 
 pub async fn listen_events(
     send_poll: Arc<Mutex<Poll>>,
     _events: &mut Events,
     server: &mut WebSocketServer,
-    _notifier: Sender<()>,
     send_conn: Arc<Mutex<Connection>>,
 ) -> std::io::Result<()> {
     let (noti, _) = tokio::sync::broadcast::channel::<()>(100);
@@ -221,7 +178,7 @@ pub async fn listen_events(
     // poll.poll(&mut events, Some(std::time::Duration::from_millis(100)))?;
     let (shutdown_notifier, mut shutdown_receiver) = mpsc::channel::<()>(10);
     loop {
-        println!("in looooop");
+        // println!("in looooop");
         let shutdown = tokio::signal::ctrl_c();
 
         let mut n = Polling::new(send_poll.clone());
@@ -249,28 +206,18 @@ pub async fn listen_events(
                 Err(())
             }
         };
-        // drop(n);
-
-        // println!("result: {:?}", d);
         if res.is_err() {
-            // drop(notifier);
             drop(shutdown_notifier);
 
-            println!("waiting for all clients to go out");
-            let mes = shutdown_receiver.recv().await;
-            println!("finally all senders are dropped");
-            // let _ = server.sender.send(ServerMessage::None).await;
-            //     drop(server);
-            //     // drop(n);
-            break;
+            let _ = shutdown_receiver.recv().await;
+            break; // break when all senders have been dropped
         }
-        // println!("break didn't work");
 
         let new_events = res;
         let r = new_events.unwrap();
         let s = r.lock().await;
         for event in s.iter() {
-            println!("event received");
+            println!("event received {:?}", event);
             match event.token() {
                 SERVER => loop {
                     // Received an event for the TCP server socket, which

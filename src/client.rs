@@ -39,8 +39,6 @@ impl Connect {
 
         let _ = self.test_receiver.as_mut().unwrap().recv().await;
 
-        println!("we have received the message");
-
         match self.state {
             ClientState::AwaitingHandshake(_) => Ok(self.read_handshake(poll, token)?),
             ClientState::Connected => Ok(self.read_frame(poll, token).await?),

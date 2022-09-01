@@ -163,56 +163,55 @@ pub async fn run() -> io::Result<()> {
 
     let _ = listen_events(send_poll, &mut events, &mut server, notifier, send_conn).await;
 
-    // tokio::select! {
-    //     res = listen_events(send_poll, &mut events, &mut server, notifier, send_conn) => {
-    //         println!("return from god {:?}", res);
-    //         // return Ok(())
-    //     },
-    //     _ = shutdown => {
-    //         println!("real deal");
-    //     }
-    // }
-    // drop(notify_shutdown)
-    // drop(notify)
-    // recv.await // err when all senders are closed
-    // final close
-    println!("I am returning");
     Ok(())
 }
 
 struct Polling {
     recv: mpsc::Receiver<Arc<Mutex<Events>>>,
+    handle: tokio::task::JoinHandle<()>,
 }
 
 impl Polling {
     fn new(poll: Arc<Mutex<Poll>>) -> Polling {
         // mpsc
         let (send, recv) = mpsc::channel::<Arc<Mutex<Events>>>(10);
-        let mut events = Arc::new(Mutex::new(Events::with_capacity(100)));
+        let events = Arc::new(Mutex::new(Events::with_capacity(100)));
         // new thread
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             // loop {
             let mut clone_events = events.lock().await;
-            let _ = poll.lock().await.poll(&mut clone_events, None);
+            // println!("waiting starts");
+            //TODO: the poll will timeout at 1 sec. If no timeout is passed then the
+            //TODO: thread is alive waiting for readiness and thread doens't go out of
+            //TODO: scope. This more of a hack. Ideally, we should abort this task using joinhandle.
+            let _ = poll
+                .lock()
+                .await
+                .poll(&mut clone_events, Some(std::time::Duration::from_secs(1)));
+            // println!("message received");
             // let event_clone = events.cl
+            // println!("event {:?}", events.lock().await);
             let _ = send.send(events.clone()).await;
             // }
         });
 
-        Polling { recv }
+        Polling { recv, handle }
     }
 
-    async fn recieve_event(&mut self) -> Arc<Mutex<Events>> {
-        self.recv.recv().await.unwrap()
+    async fn recieve_event(&mut self) -> Option<Arc<Mutex<Events>>> {
+        println!("waiting to send event");
+        self.recv.recv().await
         // r.lock().await.into()
     }
+
+    // fn abort_task()
 }
 
 pub async fn listen_events(
     send_poll: Arc<Mutex<Poll>>,
-    mut events: &mut Events,
-    mut server: &mut WebSocketServer,
-    notifier: Sender<()>,
+    _events: &mut Events,
+    server: &mut WebSocketServer,
+    _notifier: Sender<()>,
     send_conn: Arc<Mutex<Connection>>,
 ) -> std::io::Result<()> {
     let (noti, _) = tokio::sync::broadcast::channel::<()>(100);
@@ -229,33 +228,38 @@ pub async fn listen_events(
 
         let res = tokio::select! {
             res = n.recieve_event() => {
-                // println!("got events {:?}", res);
-                Ok(res.clone())
+                if let Some(val) = res {
+                    Ok(val.clone())
+                } else {
+                    Err(())
+                }
             }
             _ = shutdown => {
                 println!("in shutdown");
+                // TODO: The abort doesn't seem to work here. Ideally, the timeout in polling isn't needed
+                // TODO: the abort should take care of closing the thread.
+                // drop(notifier.clone());
+                // n.handle.abort();
                 Err(())
-                // break;
             }
         };
+        // drop(n);
 
-        println!("result: {:?}", res);
+        // println!("result: {:?}", d);
         if res.is_err() {
-            println!("dropping notifier");
-            drop(notifier);
+            // drop(notifier);
             drop(shutdown_notifier);
 
+            println!("waiting for all clients to go out");
             let mes = shutdown_receiver.recv().await;
             println!("finally all senders are dropped");
-
-            // drop(n);
+            // let _ = server.sender.send(ServerMessage::None).await;
+            //     drop(server);
+            //     // drop(n);
             break;
         }
-        println!("break didn't work");
-        // send_poll
-        //     .lock()
-        //     .await
-        //     .poll(&mut events, Some(std::time::Duration::from_millis(100)))?;
+        // println!("break didn't work");
+
         let new_events = res;
         let r = new_events.unwrap();
         let s = r.lock().await;
@@ -308,6 +312,7 @@ pub async fn listen_events(
 
                             tokio::spawn(async move {
                                 let _x = process_method(send_poll, send_conn, token).await;
+                                // std::thread::sleep(std::time::Duration::from_secs(5));
                                 println!("in tokio spawn end, client dropped");
                             });
                         } else if event.is_writable() {
@@ -335,7 +340,7 @@ pub async fn listen_events(
             }
         }
     }
-    // println!("return from accept loop");
+    println!("return from accept loop");
     Ok(())
 }
 
@@ -344,9 +349,10 @@ async fn process_method(
     send_conn: Arc<Mutex<Connection>>,
     token: Token,
 ) -> std::io::Result<()> {
-    println!("trying to aquire  {:?}", token);
+    // println!("trying to aquire  {:?}", token);
+    let shutdown = tokio::signal::ctrl_c();
     let mut new_poll = send_poll.lock().await;
-    println!("already aquire {:?}", token);
+    // println!("already aquire {:?}", token);
 
     let mut send_conn = send_conn.lock().await;
 
@@ -370,6 +376,17 @@ async fn process_method(
                 println!("in listen recieve");
                 let c = send_conn.clients.remove(&token);
                 println!("removed {:?}", c);
+            }
+            _ = shutdown => {
+                println!("in process method shutdown");
+                // drop the client; socket message
+                // client.close_client_graceful();
+                // drop(client);
+                let cl = send_conn.clients.remove(&token);
+                // this also happens automatically at the end of shutdown handler scope
+                // added here just to make it explicit that the mpsc shutdown_notifier in
+                // client is getting dropped sending message to shutdown receiver.
+                drop(cl);
             }
         }
         println!("coming out of the read tokio select");

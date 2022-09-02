@@ -1,5 +1,4 @@
 use chat_service::server;
-use tokio::signal;
 
 #[tokio::main]
 pub async fn main() {

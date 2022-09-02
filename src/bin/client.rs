@@ -55,8 +55,7 @@ impl Connection {
 
     fn close(sender: &mut Writer<TcpStream>) {
         let close_msg = Message::close();
-        let res = sender.send_message(&close_msg);
-        // println!("res {:?}", res);
+        let _res = sender.send_message(&close_msg);
     }
 }
 

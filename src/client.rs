@@ -14,7 +14,6 @@ use mio::net::TcpStream;
 use crate::frame::{Opcode, WebSocketFrame};
 use crate::http::gen_key;
 use crate::server::ServerMessage;
-// use crate::server::WebSocketServer;
 
 #[derive(Debug)]
 pub struct HttpParser {
@@ -76,7 +75,6 @@ impl Connect {
             }
             Opcode::ConnectionClose => {
                 // Connection close requset
-                println!("in close connection {:?}", token);
                 let close_frame = WebSocketFrame::close_from(&frame);
                 close_frame.write(&mut self.socket)?;
                 let _close = poll.registry().deregister(&mut self.socket);
@@ -173,12 +171,8 @@ impl Connect {
 pub struct WebSocketClient {
     // pub socket: TcpStream,
     pub connection: Connect,
-    pub shutdown: Shutdown,
     pub shutdown_notifier: mpsc::Sender<()>,
 }
-
-unsafe impl Send for WebSocketClient {}
-unsafe impl Sync for WebSocketClient {}
 
 impl ParserHandler for HttpParser {
     fn on_header_field(&mut self, _p: &mut Parser, s: &[u8]) -> bool {
@@ -200,30 +194,12 @@ impl ParserHandler for HttpParser {
     }
 }
 
+// Track the client state
 #[derive(Debug)]
 pub enum ClientState {
     AwaitingHandshake(HttpParser),
     HandshakeResponse,
     Connected,
-}
-
-#[derive(Debug)]
-pub struct Shutdown {
-    shutdown: tokio::sync::broadcast::Receiver<()>,
-    // shutdown: Shutdown,
-}
-
-impl Shutdown {
-    pub fn new(subscription: tokio::sync::broadcast::Receiver<()>) -> Shutdown {
-        Shutdown {
-            shutdown: subscription,
-        }
-    }
-
-    pub async fn listen_shut(&mut self) -> Result<(), tokio::sync::broadcast::error::RecvError> {
-        self.shutdown.recv().await?;
-        Ok(())
-    }
 }
 
 impl WebSocketClient {
@@ -235,7 +211,6 @@ impl WebSocketClient {
     ) -> WebSocketClient {
         WebSocketClient {
             connection: Connect::new(socket, sender, notifier.clone()),
-            shutdown: Shutdown::new(notifier.subscribe()),
             shutdown_notifier,
         }
     }

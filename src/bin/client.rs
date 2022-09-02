@@ -1,4 +1,5 @@
 use std::net::TcpStream;
+use std::thread::JoinHandle;
 use tokio::sync::mpsc::{self, Receiver};
 
 use tokio::signal;
@@ -55,32 +56,33 @@ impl Connection {
     fn close(sender: &mut Writer<TcpStream>) {
         let close_msg = Message::close();
         let res = sender.send_message(&close_msg);
-        println!("res {:?}", res);
+        // println!("res {:?}", res);
     }
 }
 
-async fn receive_incoming_messages(mut recv: Reader<TcpStream>, send: mpsc::Sender<()>) {
+async fn receive_incoming_messages(
+    mut recv: Reader<TcpStream>,
+    send: mpsc::Sender<()>,
+) -> JoinHandle<()> {
     std::thread::spawn(move || {
         for msg in recv.incoming_messages() {
-            println!("incoming {:?}", &msg);
             match msg {
                 Ok(OwnedMessage::Close(None)) => {
                     println!("received close message");
+                    // send close message to server before breaking.
                     break;
                 }
                 Ok(OwnedMessage::Text(s)) => {
                     println!("message {}", s);
                 }
                 Err(_err) => {
-                    println!("in server closed {:?}", _err);
-                    // drop(conn);
                     let _ = send.blocking_send(());
                     break;
                 }
                 _ => break,
             }
         }
-    });
+    })
 }
 
 #[tokio::main]
@@ -91,24 +93,26 @@ async fn main() {
 
     let mut reader = StdInput::new();
     let (send, mut recv) = tokio::sync::mpsc::channel::<()>(10);
-    receive_incoming_messages(conn.receiver, send).await;
+    let hand = receive_incoming_messages(conn.receiver, send).await;
 
     // capture in tokio select
     tokio::select! {
             _res = reader.receive_input(&mut conn.sender) => {
-                println!("accepting stops");
+                // println!("accepting stops");
             }
             _ = shutdown => {
-                println!("captured shutdown");
+                // println!("captured shutdown");
                 // websocket close frame.
                 Connection::close(&mut conn.sender);
+                let _ = hand.join();
             }
             _ = accept_message(&mut recv) => {
                 // closing connection
-                println!("closing connection");
+                // println!("closing connection");
             }
 
     }
+    // std::thread::sleep(std::time::Duration::from_secs(5));
 }
 
 async fn accept_message(recv: &mut Receiver<()>) -> std::io::Result<()> {

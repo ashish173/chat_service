@@ -35,8 +35,6 @@ pub struct Connect {
 
 impl Connect {
     pub async fn read(&mut self, poll: &mut Poll, token: &Token) -> Result<(), std::io::Error> {
-        println!("in read starting to listen");
-
         // Testing code
         // Uncomment this line to test graceful shutdown of clients
         // When uncommented the read method for any client connection
@@ -82,7 +80,6 @@ impl Connect {
                 let close_frame = WebSocketFrame::close_from(&frame);
                 close_frame.write(&mut self.socket)?;
                 let _close = poll.registry().deregister(&mut self.socket);
-                println!("close {:?}", _close);
                 let message = ServerMessage::Close(token.clone());
                 let _ = self.sender.send(message).await;
                 Ok(())
@@ -224,9 +221,7 @@ impl Shutdown {
     }
 
     pub async fn listen_shut(&mut self) -> Result<(), tokio::sync::broadcast::error::RecvError> {
-        println!("shutdown starting to listen");
         self.shutdown.recv().await?;
-        println!("shutdown message received");
         Ok(())
     }
 }

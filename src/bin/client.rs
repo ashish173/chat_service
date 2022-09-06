@@ -3,6 +3,7 @@ use std::thread::JoinHandle;
 use tokio::sync::mpsc::{self, Receiver};
 
 use tokio::signal;
+use tokio::sync::oneshot;
 use websocket::sync::{Reader, Writer};
 use websocket::{ClientBuilder, Message, OwnedMessage};
 
@@ -17,26 +18,27 @@ struct StdInput {
 
 impl StdInput {
     fn new() -> StdInput {
-        let (snd, recv) = mpsc::channel::<String>(500);
+        let (send, recv) = mpsc::channel::<String>(500);
         std::thread::spawn(move || loop {
             let mut buffer = String::new();
             let _word = std::io::stdin().read_line(&mut buffer);
 
-            let _ = snd.blocking_send(buffer);
+            let _ = send.blocking_send(buffer);
         });
 
         StdInput { recv }
     }
 
-    async fn receive_input(&mut self, sender: &mut Writer<TcpStream>) {
+    async fn receive_input(&mut self, sender: &mut mpsc::Sender<NotifyFromMessageRecieved>) {
         loop {
             let res = self.recv.recv().await;
-            send_message(sender, res.unwrap());
+            let _ = sender
+                .send(NotifyFromMessageRecieved::TextMessage(res.unwrap()))
+                .await;
         }
     }
 }
 struct Connection {
-    // builder: Client<TcpStream>,
     sender: Writer<TcpStream>,
     receiver: Reader<TcpStream>,
 }
@@ -61,21 +63,21 @@ impl Connection {
 
 async fn receive_incoming_messages(
     mut recv: Reader<TcpStream>,
-    send: mpsc::Sender<()>,
+    send: mpsc::Sender<NotifyFromMessageRecieved>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         for msg in recv.incoming_messages() {
             match msg {
                 Ok(OwnedMessage::Close(None)) => {
-                    println!("received close message");
                     // send close message to server before breaking.
+                    let _ = send.blocking_send(NotifyFromMessageRecieved::ServerClosing(true));
                     break;
                 }
                 Ok(OwnedMessage::Text(s)) => {
                     println!("message {}", s);
                 }
                 Err(_err) => {
-                    let _ = send.blocking_send(());
+                    let _ = send.blocking_send(NotifyFromMessageRecieved::ServerClosing(true));
                     break;
                 }
                 _ => break,
@@ -84,40 +86,75 @@ async fn receive_incoming_messages(
     })
 }
 
+#[derive(Debug)]
+enum NotifyFromMessageRecieved {
+    TextMessage(String),
+    ServerClosing(bool), // true when responding to close message, false when initiating close
+}
+
 #[tokio::main]
 async fn main() {
-    let mut conn = Connection::new("ws://127.0.0.1:9000");
-    // let (recv, mut send) = conn.split().unwrap();
+    let conn = Connection::new("ws://127.0.0.1:9000");
     let shutdown = signal::ctrl_c();
 
     let mut reader = StdInput::new();
-    let (send, mut recv) = tokio::sync::mpsc::channel::<()>(10);
-    let hand = receive_incoming_messages(conn.receiver, send).await;
-
+    let (send, mut recv) = tokio::sync::mpsc::channel::<NotifyFromMessageRecieved>(10);
+    // let sender_clone = send.clone();
+    let hand = receive_incoming_messages(conn.receiver, send.clone()).await;
+    let mut send_clone = send.clone();
     // capture in tokio select
+    let (final_shutdown_sender, final_receiver) = tokio::sync::oneshot::channel::<()>();
+
+    // listens to any close client message from tcp receiver
+    tokio::spawn(async move {
+        let _ = accept_message(&mut recv, conn.sender).await;
+        let _ = final_shutdown_sender.send(());
+        // send message to stop listening
+    });
+
     tokio::select! {
-            _res = reader.receive_input(&mut conn.sender) => {
-                // println!("accepting stops");
-            }
-            _ = shutdown => {
-                // println!("captured shutdown");
-                // websocket close frame.
-                Connection::close(&mut conn.sender);
+            _res = reader.receive_input(&mut send_clone) => {}
+            _ = shutdown => { // when ctrl+c is pressed on client
+                let res = send.send(NotifyFromMessageRecieved::ServerClosing(false)).await;
                 let _ = hand.join();
             }
-            _ = accept_message(&mut recv) => {
-                // closing connection
-                // println!("closing connection");
-            }
+            _ = close(final_receiver) => {
+                println!("final closing");
+            } // when server terminates
 
     }
-    // std::thread::sleep(std::time::Duration::from_secs(5));
 }
 
-async fn accept_message(recv: &mut Receiver<()>) -> std::io::Result<()> {
+async fn close(final_receiver: tokio::sync::oneshot::Receiver<()>) -> std::io::Result<()> {
+    let _ = final_receiver.await;
+    Ok(())
+}
+
+async fn accept_message(
+    recv: &mut Receiver<NotifyFromMessageRecieved>,
+    mut sender: Writer<TcpStream>,
+) -> std::io::Result<()> {
     loop {
         let done = match recv.recv().await {
-            Some(_c) => true,
+            Some(message) => {
+                // close message to server
+                let close = match message {
+                    NotifyFromMessageRecieved::ServerClosing(closing) => {
+                        // send message
+                        Connection::close(&mut sender);
+                        if closing {
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    NotifyFromMessageRecieved::TextMessage(msg) => {
+                        send_message(&mut sender, msg);
+                        false
+                    }
+                };
+                close
+            }
             None => false,
         };
         if done {

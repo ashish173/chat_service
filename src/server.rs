@@ -1,5 +1,5 @@
 use crate::client::{ClientState, WebSocketClient};
-use crate::poll::Polling;
+use crate::poll::{self, Polling};
 use mio::event::Event;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
@@ -322,7 +322,8 @@ fn listen_incoming_message(
                     }
                     ServerMessage::Close(token) => {
                         // client closed, remove from webserver object
-                        recv_conn.lock().await.clients.remove(&token);
+                        // TODO final drop for client
+                        let _ = recv_conn.lock().await.clients.remove(&token);
                     }
                     ServerMessage::None => {}
                 }

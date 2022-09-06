@@ -1,11 +1,12 @@
-use std::{sync::Arc, thread::JoinHandle};
+use std::sync::Arc;
 
 use mio::{Events, Poll};
 use tokio::sync::{mpsc, Mutex};
+use tokio::task::JoinHandle;
 
 pub struct Polling {
     recv: mpsc::Receiver<Arc<Mutex<Events>>>,
-    pub handle: tokio::task::JoinHandle<()>,
+    pub handle: JoinHandle<()>,
 }
 
 impl Polling {

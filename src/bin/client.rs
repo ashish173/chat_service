@@ -103,7 +103,7 @@ async fn main() {
     let hand = receive_incoming_messages(conn.receiver, send.clone()).await;
     let mut send_clone = send.clone();
     // capture in tokio select
-    let (final_shutdown_sender, final_receiver) = tokio::sync::oneshot::channel::<()>();
+    let (final_shutdown_sender, final_receiver) = oneshot::channel::<()>();
 
     // listens to any close client message from tcp receiver
     tokio::spawn(async move {
@@ -115,7 +115,7 @@ async fn main() {
     tokio::select! {
             _res = reader.receive_input(&mut send_clone) => {}
             _ = shutdown => { // when ctrl+c is pressed on client
-                let res = send.send(NotifyFromMessageRecieved::ServerClosing(false)).await;
+                let _res = send.send(NotifyFromMessageRecieved::ServerClosing(false)).await;
                 let _ = hand.join();
             }
             _ = close(final_receiver) => {

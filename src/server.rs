@@ -269,7 +269,7 @@ pub async fn run() -> io::Result<()> {
 
     let mut server = WebSocketServer::new(server, recv_conn);
 
-    let res = server
+    let _res = server
         .listen_and_handle_events(shared.poll, send_conn)
         .await;
 

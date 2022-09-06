@@ -92,7 +92,9 @@ impl WebSocketServer {
                 }
             }
             _ = shutdown => {
-                println!("in shutdown");
+                // Doesn't work here
+                // polling.handle.abort();
+                println!("shutdown starting...");
                 // If read takes more time then this handler will run on shutdown signal
                 // TODO: The abort doesn't seem to work here. Ideally, the timeout in polling isn't needed
                 // TODO: the abort should take care of closing the thread.
@@ -206,7 +208,9 @@ impl WebSocketServer {
             let res = WebSocketServer::get_events(send_poll.clone(), send_conn.clone()).await;
             if let None = res {
                 drop(shutdown_notifier); // drop the first notifier
+                println!("waiting for client to drop");
                 let _ = shutdown_receiver.recv().await;
+                println!("clients dropped");
                 break; // stop the program
             }
 
@@ -265,7 +269,7 @@ pub async fn run() -> io::Result<()> {
 
     let mut server = WebSocketServer::new(server, recv_conn);
 
-    let _ = server
+    let res = server
         .listen_and_handle_events(shared.poll, send_conn)
         .await;
 

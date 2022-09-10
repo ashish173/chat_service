@@ -7,3 +7,4 @@ Features
 3. Client uses `websocket` crate to establish websocket connection with server
 4. Server reads the data from the stream and parses websocket header
 5.
+# chat_service

@@ -312,15 +312,23 @@ fn listen_incoming_message(
             if let Some(rec) = rx.recv().await {
                 match rec {
                     ServerMessage::Text(ref data, self_token) => {
+                        let mut is_empty_client: bool = false;
                         let payload = std::str::from_utf8(&data).unwrap();
                         let mut conn = recv_conn.lock().await;
-
+                        let client = conn.clients.get_mut(&self_token).unwrap();
+                        if client.name == None {
+                            client.name = Some(payload.to_owned());
+                            is_empty_client = true;
+                        };
+                        let chat_payload = client.name.as_ref().unwrap().to_owned()+ "=> " + payload;
                         for (k, v) in &mut conn.clients.borrow_mut().into_iter() {
                             if k.0 != self_token.0 {
-                                // println!("token: {:?}", k);
-                                let _ = v.connection.write(payload);
-                            } else {
-                                // println!("excluding {:?} value {:?}", k, payload);
+                                if is_empty_client {
+                                    let new_client = "New client added : ".to_owned() + payload;
+                                    let _ = v.connection.write(&new_client[..]);
+                                } else {
+                                    let _ = v.connection.write(&chat_payload[..]);
+                                }
                             }
                         }
                     }

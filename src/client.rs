@@ -172,6 +172,7 @@ pub struct WebSocketClient {
     // pub socket: TcpStream,
     pub connection: Connect,
     pub shutdown_notifier: mpsc::Sender<()>,
+    pub name: Option<String>,
 }
 
 impl ParserHandler for HttpParser {
@@ -212,6 +213,7 @@ impl WebSocketClient {
         WebSocketClient {
             connection: Connect::new(socket, sender, notifier.clone()),
             shutdown_notifier,
+            name:None,
         }
     }
 }

@@ -74,7 +74,7 @@ async fn receive_incoming_messages(
                     break;
                 }
                 Ok(OwnedMessage::Text(s)) => {
-                    println!("message {}", s);
+                    println!("{}", s);
                 }
                 Err(_err) => {
                     let _ = send.blocking_send(NotifyFromMessageRecieved::ServerClosing(true));
@@ -94,8 +94,21 @@ enum NotifyFromMessageRecieved {
 
 #[tokio::main]
 async fn main() {
-    let conn = Connection::new("ws://127.0.0.1:9000");
+    println!("please enter the user_name:");
+    let mut buf = String::new();
+    loop {
+        let word = std::io::stdin().read_line(&mut buf).unwrap();
+        //checking the word length to verify valid user
+        if word == 1 {
+            buf = "".to_lowercase(); // creating empty string as enter else enter will be count and word variable will be more than 1
+            println!("please enter valid user_name:");
+        } else {
+            break;
+        }
+    }
+    let mut conn = Connection::new("ws://127.0.0.1:9000");
     let shutdown = signal::ctrl_c();
+    send_message(&mut conn.sender, buf);
 
     let mut reader = StdInput::new();
     let (send, mut recv) = tokio::sync::mpsc::channel::<NotifyFromMessageRecieved>(10);
